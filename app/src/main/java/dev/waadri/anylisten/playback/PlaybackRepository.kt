@@ -10,11 +10,13 @@ import dev.waadri.anylisten.data.config.ConfigStore
 import dev.waadri.anylisten.data.config.PlaybackPreferences
 import dev.waadri.anylisten.data.remote.Library
 import dev.waadri.anylisten.data.remote.PlayMethod
+import dev.waadri.anylisten.data.remote.RpcState
 import dev.waadri.anylisten.data.remote.RpcSocket
 import dev.waadri.anylisten.data.remote.Wire
 import dev.waadri.anylisten.domain.PlayOrderDecision
 import dev.waadri.anylisten.domain.PlayOrderResolver
 import dev.waadri.anylisten.domain.PlayQueueSnapshot
+import dev.waadri.anylisten.domain.ResumePoint
 import java.util.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -23,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
@@ -115,6 +118,14 @@ class PlaybackRepository(
     private var progressReportJob: Job? = null
     private var resumeJob: Job? = null
 
+    /**
+     * True once the resume point has either been restored or ruled out for this session.
+     *
+     * Deliberately not set on a failed attempt: that failure is almost always a dropped connection,
+     * and the point is to retry when it comes back.
+     */
+    private var resumeSettled = false
+
     /** Set while a resolved URL is in flight so a late arrival cannot clobber a newer request. */
     private var resolvingItemId: String? = null
 
@@ -149,7 +160,7 @@ class PlaybackRepository(
         socket.on(RpcSocket.INCOMING_SETTING_CHANGED) { null }
 
         wireJobs += scope.launch { observeEngine() }
-        wireJobs += scope.launch { maybeResume() }
+        observeResume(socket)
         startPositionTracking()
     }
 
@@ -426,42 +437,80 @@ class PlaybackRepository(
     }
 
     /**
-     * Restores the last queue on launch when the user has asked for it.
+     * Restores the last queue once the socket can actually serve requests.
      *
-     * It reloads the same library list and returns to the recorded track and position. It does NOT
-     * start playing: an app that begins making noise on launch is obnoxious, and the phone may well
-     * be in a pocket.
+     * ## Why this waits for a connection instead of loading immediately
+     *
+     * `ClientSession` hands the socket over *before* calling `start()` on it, so when [attachSocket]
+     * runs the socket is still `Idle` and every call fails at once. Loading the saved list there
+     * made resume-on-launch look implemented while never working a single time — there was no
+     * error, the queue just stayed empty.
+     *
+     * Waiting for `Connected` also makes the feature self-healing: if the first connect attempt
+     * fails, the saved point stays pending and is restored when a retry succeeds.
      */
-    private suspend fun maybeResume() {
+    private fun observeResume(socket: RpcSocket) {
+        resumeJob?.cancel()
+        resumeJob = scope.launch {
+            socket.state
+                .filterIsInstance<RpcState.Connected>()
+                .collect { applyResumePoint() }
+        }
+    }
+
+    private suspend fun applyResumePoint() {
+        if (queue.isNotEmpty()) {
+            // The user has already started something. Overwriting the queue here would yank the
+            // music out from under them.
+            resumeSettled = true
+            return
+        }
+
         val saved = configStore.currentPlayback()
-        prefs = saved
+        // Mode and the switch are local preferences, not playback state, so they are adopted even
+        // when nothing is restored.
+        prefs = prefs.copy(playMethod = saved.playMethod, resumeOnLaunch = saved.resumeOnLaunch)
+
         if (!saved.resumeOnLaunch) {
+            resumeSettled = true
             publish()
             return
         }
-        val listId = saved.lastListId ?: run {
-            publish()
-            return
-        }
-
-        val restored = loadListMusics(listId).getOrNull() ?: run {
-            publish()
-            return
-        }
-        if (restored.isEmpty()) {
+        val listId = saved.lastListId
+        if (listId.isNullOrBlank()) {
+            resumeSettled = true
             publish()
             return
         }
 
+        // Left pending on failure: a dropped connection is the common cause, and the next Connected
+        // emission should try again rather than the feature silently giving up.
+        val restored = loadListMusics(listId).getOrNull()
+        if (restored.isNullOrEmpty()) {
+            publish()
+            return
+        }
+
+        resumeSettled = true
+        val point = ResumePoint(
+            listId = listId,
+            trackIndex = saved.lastTrackIndex,
+            positionMs = saved.lastPositionMs,
+        )
         queue = restored
-        currentIndex = saved.lastTrackIndex.coerceIn(0, restored.size - 1)
+        currentIndex = point.indexFor(restored.size) ?: 0
         sourceListId = listId
         historyIndex = 0
         userWantsPlaying = false
         publish()
 
-        val track = restored[currentIndex]
-        loadAndPlay(track, startPositionMs = saved.lastPositionMs, autoPlay = false)
+        // Prepared but not played: launching into sound from a pocket is unwelcome, and pressing
+        // play continues from exactly where the last session stopped.
+        loadAndPlay(
+            restored[currentIndex],
+            startPositionMs = point.positionFor(),
+            autoPlay = false,
+        )
     }
 
     // ------------------------------------------------------------------ background playback
