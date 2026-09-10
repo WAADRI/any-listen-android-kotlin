@@ -76,6 +76,7 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
             onSeek = playerViewModel::seekTo,
             onOpenSettings = { screen = Screen.SETTINGS },
             onOpenBrowse = { screen = Screen.BROWSE },
+            onCyclePlayMethod = playerViewModel::cyclePlayMethod,
             modifier = modifier,
         )
 
@@ -103,6 +104,8 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
             onConnect = connectViewModel::connect,
             onDisconnect = connectViewModel::disconnect,
             onOpenPlayer = { screen = Screen.PLAYER },
+            onPlayMethodChange = connectViewModel::onPlayMethodChanged,
+            onResumeOnLaunchChange = connectViewModel::onResumeOnLaunchChanged,
             modifier = modifier,
         )
     }

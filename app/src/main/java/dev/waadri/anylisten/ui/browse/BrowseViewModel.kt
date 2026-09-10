@@ -101,7 +101,12 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
         val tracks = _state.value.tracks
         if (index !in tracks.indices) return
         viewModelScope.launch {
-            container.playback.playFromList(listId, tracks, index)
+            container.playback.playFromList(
+                listId = listId,
+                listName = _state.value.openListName,
+                list = tracks,
+                index = index,
+            )
         }
     }
 

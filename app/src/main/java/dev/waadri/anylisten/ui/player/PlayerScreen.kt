@@ -16,9 +16,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PauseCircleOutline
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
@@ -65,6 +70,7 @@ fun PlayerScreen(
     onSeek: (Double) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenBrowse: () -> Unit,
+    onCyclePlayMethod: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -166,19 +172,44 @@ fun PlayerScreen(
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(4.dp))
 
-        Text(
-            text = buildString {
-                append(playMethodLabel(state.playMethod))
-                if (state.queueSize > 0) {
-                    append(" · ")
-                    append("${state.queueIndex + 1}/${state.queueSize}")
-                }
-            },
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // Play mode and queue position. The mode button is a tap-to-cycle control, matching the
+        // web client: it is the one control changed most often and a picker would cost two taps.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            TextButton(onClick = onCyclePlayMethod) {
+                Icon(
+                    imageVector = playMethodIcon(state.playMethod),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(playMethodLabel(state.playMethod))
+            }
+            if (state.queueSize > 0) {
+                Text(
+                    text = "${state.queueIndex + 1}/${state.queueSize}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        if (state.sourceListName.isNotBlank()) {
+            Text(
+                text = "来自「${state.sourceListName}」",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        Spacer(Modifier.height(4.dp))
 
         state.errorMessage?.let { message ->
             Spacer(Modifier.height(8.dp))
@@ -289,11 +320,19 @@ private fun OfflineNotice() {
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = "与服务端的连接已断开",
+            text = "服务端已断开",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.error,
         )
     }
+}
+
+private fun playMethodIcon(method: PlayMethod) = when (method) {
+    PlayMethod.LIST_LOOP -> Icons.Filled.Repeat
+    PlayMethod.RANDOM -> Icons.Filled.Shuffle
+    PlayMethod.LIST -> Icons.Filled.PlaylistPlay
+    PlayMethod.SINGLE_LOOP -> Icons.Filled.RepeatOne
+    PlayMethod.STOP_AT_END -> Icons.Filled.PauseCircleOutline
 }
 
 private fun playMethodLabel(method: PlayMethod): String = when (method) {

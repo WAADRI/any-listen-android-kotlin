@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import dev.waadri.anylisten.AnyListenApp
 import dev.waadri.anylisten.data.config.ServerConfig
 import dev.waadri.anylisten.data.remote.AuthApi
+import dev.waadri.anylisten.data.remote.PlayMethod
 import dev.waadri.anylisten.domain.ClientSession
 import dev.waadri.anylisten.domain.ConnectionPhase
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,6 +21,9 @@ data class ConnectFormState(
     val autoConnect: Boolean = true,
     val passwordVisible: Boolean = false,
     val loaded: Boolean = false,
+    /** Local playback mode, shown here because it is a preference, not a transport control. */
+    val playMethod: PlayMethod = PlayMethod.LIST_LOOP,
+    val resumeOnLaunch: Boolean = true,
 )
 
 class ConnectViewModel(application: Application) : AndroidViewModel(application) {
@@ -44,10 +48,13 @@ class ConnectViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch {
             val saved = container.configStore.current()
+            val playback = container.configStore.currentPlayback()
             _form.value = _form.value.copy(
                 serverUrl = saved.serverUrl,
                 password = saved.password,
                 autoConnect = saved.autoConnect,
+                playMethod = playback.playMethod,
+                resumeOnLaunch = playback.resumeOnLaunch,
                 loaded = true,
             )
             _phase.value = session.phase.value
@@ -75,6 +82,20 @@ class ConnectViewModel(application: Application) : AndroidViewModel(application)
 
     fun togglePasswordVisible() {
         _form.value = _form.value.copy(passwordVisible = !_form.value.passwordVisible)
+    }
+
+    /**
+     * Playback preferences are applied through the player, which owns them, and this only mirrors
+     * them for display. Writing to DataStore here as well would give the same setting two owners.
+     */
+    fun onPlayMethodChanged(method: PlayMethod) {
+        _form.value = _form.value.copy(playMethod = method)
+        container.playback.setPlayMethod(method)
+    }
+
+    fun onResumeOnLaunchChanged(enabled: Boolean) {
+        _form.value = _form.value.copy(resumeOnLaunch = enabled)
+        container.playback.setResumeOnLaunch(enabled)
     }
 
     /**
