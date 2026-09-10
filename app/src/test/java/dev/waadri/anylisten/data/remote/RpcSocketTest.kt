@@ -77,12 +77,14 @@ class RpcSocketTest {
     }
 
     @Test
-    fun `backoff starts at two seconds and grows every two attempts`() {
+    fun `backoff matches the web client curve`() {
+        // web client: waitTime = min(2000 + floor(failedNum / 2) * 3000, 60000)
         assertEquals(2_000L, RpcSocket.backoffMsFor(1))
-        assertEquals(2_000L, RpcSocket.backoffMsFor(2))
+        assertEquals(5_000L, RpcSocket.backoffMsFor(2))
         assertEquals(5_000L, RpcSocket.backoffMsFor(3))
-        assertEquals(5_000L, RpcSocket.backoffMsFor(4))
+        assertEquals(8_000L, RpcSocket.backoffMsFor(4))
         assertEquals(8_000L, RpcSocket.backoffMsFor(5))
+        assertEquals(11_000L, RpcSocket.backoffMsFor(6))
     }
 
     @Test
