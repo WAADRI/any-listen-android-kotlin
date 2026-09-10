@@ -180,11 +180,33 @@ class RpcSocket(
     }
 
     /**
+     * `music.getMusicLyric(info)`: the lyric for a track.
+     *
+     * Returns null rather than throwing when the server has no lyric, which is the normal case for
+     * a track nobody has tagged or fetched lyrics for. The server also returns null for a local
+     * track that belongs to a different device, since only the owning machine can read its file.
+     *
+     * The payload is a single LRC string with base64 tags; see
+     * [dev.waadri.anylisten.domain.LyricsParser] for what is inside it.
+     */
+    suspend fun getMusicLyric(musicInfo: Wire.MusicInfo, isRefresh: Boolean = false): Wire.LyricInfo? {
+        val payload = M2cCodec.json.encodeToJsonElement(
+            Wire.GetMusicPicInfo.serializer(),
+            Wire.GetMusicPicInfo(musicInfo = musicInfo, isRefresh = isRefresh),
+        )
+        val result = call(OUT_MUSIC_GET_LYRIC.split("."), listOf(payload)) ?: return null
+        if (result is JsonNull) return null
+        return runCatching {
+            M2cCodec.json.decodeFromJsonElement(Wire.MusicLyricInfo.serializer(), result).info
+        }.getOrNull()
+    }
+
+    /**
      * `app.setSetting(partial)` — writes server-side settings.
      *
-     * The server accepts a partial object and, once applied, broadcasts `settingChanged` to every
-     * ready client. Playback mode is stored here rather than being kept client-side, so this is
-     * the only way to change it.
+     * Kept for read-only-ish server capabilities (lyric preferences and similar). Playback state
+     * must NOT be written through here: this client owns its queue, playhead and play mode, and
+     * writing them upstream would reintroduce the server round trip the local design removed.
      */
     suspend fun setSetting(setting: JsonObject) {
         call(OUT_APP_SET_SETTING.split("."), listOf(setting))
