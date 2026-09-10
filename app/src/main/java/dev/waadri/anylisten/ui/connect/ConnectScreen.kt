@@ -2,6 +2,7 @@ package dev.waadri.anylisten.ui.connect
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -263,6 +264,7 @@ fun ConnectScreen(
  * All five modes are offered here, including "播完停止" — unlike the player's tap-to-cycle button,
  * which skips it. A settings screen has room to be explicit.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PlayMethodPicker(
     selected: PlayMethod,

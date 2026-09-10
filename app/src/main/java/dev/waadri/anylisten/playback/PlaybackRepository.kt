@@ -247,7 +247,7 @@ class PlaybackRepository(
     fun pause() {
         userWantsPlaying = false
         engine.pause()
-        persistResumePoint()
+        scope.launch { persistResumePoint() }
         publish()
     }
 
@@ -265,7 +265,7 @@ class PlaybackRepository(
 
     fun seekTo(positionMs: Long) {
         engine.seekTo(positionMs)
-        persistResumePoint()
+        scope.launch { persistResumePoint() }
         publish()
     }
 
