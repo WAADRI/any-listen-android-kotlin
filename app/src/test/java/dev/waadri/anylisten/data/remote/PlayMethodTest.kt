@@ -59,18 +59,16 @@ class PlayMethodTest {
     }
 
     @Test
-    fun `cycling from any mode always returns to it`() {
-        // Guards against a future mode being added without updating next(), which would strand the
-        // cycle: `next()` would no longer be a permutation of the enum's values.
-        PlayMethod.entries.forEach { start ->
-            var current = start
-            var steps = 0
-            do {
-                current = current.next()
-                steps++
-            } while (current != start && steps <= PlayMethod.entries.size)
-
-            assertEquals("从 $start 出发无法回到自身", start, current)
+    fun `next always yields a mode inside the cycle`() {
+        // 'none' is reachable only from the settings picker and is intentionally skipped by the
+        // cycle: one tap from it lands in the cycle and never returns. Guarding that here keeps a
+        // future mode from being added to next() in a way that strands the button.
+        PlayMethod.entries.forEach { method ->
+            assertEquals(
+                "从 $method 出发的 next() 落在了循环之外",
+                true,
+                method.next() in CYCLE,
+            )
         }
     }
 
@@ -85,9 +83,16 @@ class PlayMethodTest {
             current = current.next()
         }
 
-        assertEquals(
-            PlayMethod.entries.filter { it != PlayMethod.STOP_AT_END }.toSet(),
-            reachable,
+        assertEquals(CYCLE, reachable)
+    }
+
+    private companion object {
+        /** The modes the player's tap-to-cycle button can actually reach, in order. */
+        val CYCLE = setOf(
+            PlayMethod.LIST_LOOP,
+            PlayMethod.RANDOM,
+            PlayMethod.SINGLE_LOOP,
+            PlayMethod.LIST,
         )
     }
 }
