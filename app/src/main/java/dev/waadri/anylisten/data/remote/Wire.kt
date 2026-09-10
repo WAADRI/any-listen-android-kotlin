@@ -172,9 +172,10 @@ object Wire {
     // ---------------------------------------------------------------- requests we send
 
     /**
-     * Player action payload. any-listen models this as a union, e.g.
-     * `{"action":"next"}` vs `{"action":"seek","data":12.5}`. A nullable `data` keeps the
-     * `action`-only variants byte-identical to what the web client sends.
+     * Player action payload. any-listen models this as a union: some variants carry only an
+     * action ("next", "prev", "toggle") and others carry an action plus a `data` value
+     * ("seek" with seconds, "volume" with 0..1, "playbackRate" with a multiplier). A nullable
+     * `data` keeps the action-only variants byte-identical to what the web client sends.
      */
     @Serializable
     data class PlayerAction(
