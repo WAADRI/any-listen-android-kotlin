@@ -39,6 +39,12 @@ sealed interface ConnectionPhase {
 class ClientSession(
     private val scope: CoroutineScope,
     private val authApi: AuthApi = AuthApi(),
+    /**
+     * Fired whenever the socket behind this session is replaced or torn down, with the base URL
+     * it belongs to. Playback (and later the media service) hangs off this, which keeps the
+     * transport knowledge inside this class instead of leaking connection details to callers.
+     */
+    private val onSocketChanged: (RpcSocket?, String) -> Unit = { _, _ -> },
 ) {
     private val _phase = MutableStateFlow<ConnectionPhase>(ConnectionPhase.Disconnected)
     val phase: StateFlow<ConnectionPhase> = _phase.asStateFlow()
@@ -92,6 +98,7 @@ class ClientSession(
         )
         _rpc.value = socket
         _phase.value = ConnectionPhase.Connecting
+        onSocketChanged(socket, serverUrl)
 
         observeJob?.cancel()
         observeJob = scope.launch {
@@ -119,5 +126,6 @@ class ClientSession(
         observeJob = null
         _rpc.value?.stop()
         _rpc.value = null
+        onSocketChanged(null, "")
     }
 }

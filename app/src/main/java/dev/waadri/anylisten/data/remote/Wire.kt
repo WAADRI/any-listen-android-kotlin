@@ -163,12 +163,15 @@ object Wire {
         val lastTrackId: String? = null,
     )
 
-    /** `data` for a `status` event is `[<PlayerStatus>, <userWantsPlaying>]`. */
-    @Serializable
-    data class StatusData(
-        val status: String = "",
-        val playing: Boolean = false,
-    )
+    /**
+     * `data` for a `status` event is a two-element ARRAY: `["playing", true]` — a status string
+     * plus the user's intent to be playing. It is positional, not an object, so it is parsed by
+     * helpers in [M2cCodec] rather than a `@Serializable` class.
+     */
+    object StatusEventData {
+        const val INDEX_STATUS = 0
+        const val INDEX_PLAYING = 1
+    }
 
     // ---------------------------------------------------------------- requests we send
 

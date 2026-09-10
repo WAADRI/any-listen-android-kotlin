@@ -32,10 +32,12 @@ class ConnectViewModel(application: Application) : AndroidViewModel(application)
     private val _phase = MutableStateFlow<ConnectionPhase>(ConnectionPhase.Disconnected)
     val phase: StateFlow<ConnectionPhase> = _phase.asStateFlow()
 
-    private val session = ClientSession(viewModelScope)
-
-    /** Exposed so later phases can hand the live RPC session to the player. */
-    val clientSession: ClientSession get() = session
+    /**
+     * The session is owned by the application container, not by this ViewModel: playback has to
+     * survive the activity being destroyed, and two competing sessions would leave the player
+     * bound to a socket nobody is driving.
+     */
+    private val session: ClientSession get() = container.clientSession
 
     private var autoConnectAttempted = false
 
