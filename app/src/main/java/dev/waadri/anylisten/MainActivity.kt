@@ -1,14 +1,19 @@
 package dev.waadri.anylisten
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -54,6 +59,8 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
     // address does not throw the user back to the player.
     var screen by rememberSaveable { mutableStateOf(Screen.PLAYER) }
 
+    NotificationPermissionRequest()
+
     // Back from settings returns to the player rather than leaving the app.
     BackHandler(enabled = screen == Screen.SETTINGS) { screen = Screen.PLAYER }
 
@@ -81,5 +88,27 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
             onOpenPlayer = { screen = Screen.PLAYER },
             modifier = modifier,
         )
+    }
+}
+
+/**
+ * Asks for the notification permission on Android 13+, once, on first composition.
+ *
+ * Without it the media notification cannot be posted, which on Android 14+ also means the
+ * foreground service has nothing to show — playback itself still works, so a refusal is
+ * tolerated rather than treated as an error. The request is fire-and-forget: the platform
+ * remembers a refusal, so re-asking every launch would only be nagging.
+ */
+@Composable
+private fun NotificationPermissionRequest() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { /* granted or not, playback proceeds either way */ },
+    )
+
+    LaunchedEffect(Unit) {
+        launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
