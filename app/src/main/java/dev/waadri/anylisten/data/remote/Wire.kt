@@ -4,7 +4,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * Protocol data models, transcribed from any-listen's `packages/shared/types/types/*.d.ts`.
+ * Protocol data models, transcribed from any-listen's shared type declarations in
+ * `packages/shared/types/types` (the per-domain `.d.ts` files).
  *
  * Conventions:
  *  - Server objects carry fields the client does not need; `ignoreUnknownKeys` in
