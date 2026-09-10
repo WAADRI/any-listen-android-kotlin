@@ -94,6 +94,30 @@ any-listen-android/
 - ❌ 修改 any-listen 服务端代码——本项目是纯客户端，服务端行为差异应通过兼容层解决。
 - ❌ 文档类更改也**必须**走 PR 流程，不允许直接提交 `main`。
 
+## 架构定位：本地播放器
+
+**本项目是本地播放器，服务端只是曲库。** 这条决定了后面所有设计，改代码前必须先接受它：
+
+| 服务端提供 | 本机负责 |
+|---|---|
+| 歌单（`list.getAllUserLists`） | 播放队列 |
+| 歌曲（`list.getListMusics`） | 当前播哪首 |
+| 播放地址（`music.getMusicUrl`） | 播放进度（本地，不上报） |
+| 封面、歌词 | 播放顺序（本地，不同步） |
+| — | 音量（交给系统媒体音量） |
+
+具体禁止事项：
+
+- ❌ 不上报 `progress` / `status`——进度是纯本地的。
+- ❌ 不调 `app.setSetting` 改播放模式——模式存在本地 DataStore。
+- ❌ 不用 `player.playListAction` 把队列推给服务端——队列是本地的。
+- ❌ 不读服务端设置里的音量/模式——音量归**系统媒体音量**管，App 内不做音量控件。
+- ❌ 不订阅 `playerEvent` / `playerAction` 来驱动播放。
+
+这些通道在 `RpcSocket` 里仍然存在，是为了将来接歌词、远程控制等只读能力时不用重写协议层，**但当前不得用于同步播放状态**。
+
+代价必须说清：**没有跨设备续播**。手机和桌面端各播各的。这是有意的权衡，也正是进度条与自动切歌在本项目能正常工作、而在手机浏览器里失效的原因。
+
 ## 协议陷阱（改 `data/remote/` 或 `playback/` 前必读）
 
 以下每一条都曾导致过「编译通过、测试通过、装到手机上却完全不工作」的问题，改动相关代码时必须保留其处理逻辑：
@@ -101,21 +125,22 @@ any-listen-android/
 1. **`app.inited` 每次重连都要重发。**
    服务端广播普遍带 `if (socket.winType != 'main' || !socket.isInited) return`，而 `isInited` 是 **per-socket** 状态，重连后归零。漏发的表现是「连上了但永远收不到任何推送」，且不报错。
 
-2. **`toggle` 不可原样上报，必须上报实际执行的 `play`/`pause`。**
-   服务端用**它自己的** `playing` 标志解析 `toggle`，而该标志只由客户端上报的 `status` 更新。转发 `toggle` 会让服务端多切一首。
+2. **收发方法路径不对称。**
+   服务端 → 客户端为**裸方法名**（`playerEvent`、`playerAction`、`playListAction`、`settingChanged`，`createRemoteGroup` 的分组名不上线）；客户端 → 服务端**要带前缀**（`music.getMusicUrl`、`app.inited`、`list.getAllUserLists`），因为对应服务端 `exposeObj` 的嵌套层级。
 
-3. **`musicChanged` 是纯通知，队列需客户端自行更新。**
-   服务端处理切歌时**不改写自己存储的队列**（消息内的 `list`/`index` 是变更前快照）。只从服务端重载队列会永远跟不上切歌；而目标曲目已正确播放时又不能重载，否则歌从头重放。
+3. **未注册的入站方法必须有兜底。**
+   服务端会把播放类广播发给每个 ready 客户端，方法未注册时服务端会记错误日志。因此 `attachSocket` 中保留了 `playerEvent` / `playerAction` / `playListAction` / `settingChanged` 的**空实现**。这是有意的，不要因为「看起来没人用」而删除。
 
-4. **收发方法路径不对称。**
-   服务端 → 客户端为**裸方法名**（`playerEvent`、`playerAction`、`playListAction`，`createRemoteGroup` 的分组名不上线）；客户端 → 服务端**要带前缀**（`player.getPlayInfo`、`music.getMusicUrl`、`app.inited`、`list.getUserLists`），因为对应服务端 `exposeObj` 的嵌套层级。
+4. **`player.togglePlayMethod` 的 `'none'` 必须保留为独立取值。**
+   语义上接近 `'list'`，但若折叠成一个值，「设为播完停止 → 读回」就无法往返一致。
 
-5. **进度上报是单向的。**
-   持有播放的一端上报 `progress`；本端必须忽略自己的回声，否则与播放器状态互搏。
+5. **`music.getMusicUrl` 可能返回同源相对路径。**
+   走代理或本地缓存的曲目会返回 `/xxx` 形式，必须补上 baseUrl 再交给 ExoPlayer，否则是无法解析的 URI。
 
-6. **`player.playListAction({action:'set'})` 是客户端改队列的唯一途径**，且只替换队列、**不启动播放**——播放要客户端本地发起。顺序必须是「服务端先接受队列 → 再本地播放」，否则紧随的 `next` 会用旧列表算后继。
+6. **除曲库外不要依赖服务端状态。**
+   队列、索引、播放模式都是本地的；服务端返回的播放信息只在浏览曲库时使用。
 
-改动上述任一环节时，请同步更新 `README.md` 的协议说明，并保证 `app/src/test/` 中有对应覆盖。
+改动上述任一环节时，请同步更新 `README.md` 的说明，并保证 `app/src/test/` 中有对应覆盖。
 
 ## 适用对象
 
