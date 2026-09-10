@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -131,13 +132,27 @@ class AudioEngine(
         if (d > 0) _durationMs.value = d
     }
 
-    fun setSource(url: String, startPositionMs: Long = 0L) {
+    /**
+     * Loads a track. [metadata] is what the media notification and lock screen display, so it is
+     * passed in rather than derived here — this class knows nothing about the server's models.
+     */
+    fun setSource(url: String, startPositionMs: Long = 0L, metadata: MediaMetadata? = null) {
         ensurePlayer()
         val p = player ?: return
         _errors.value = null
-        p.setMediaItem(MediaItem.fromUri(url))
+        val item = MediaItem.Builder()
+            .setUri(url)
+            .apply { if (metadata != null) setMediaMetadata(metadata) }
+            .build()
+        p.setMediaItem(item)
         p.prepare()
         if (startPositionMs > 0) p.seekTo(startPositionMs)
+    }
+
+    /** The player, creating it if needed. Used by [PlaybackRepository] to build the media session. */
+    fun playerOrNull(): ExoPlayer? {
+        ensurePlayer()
+        return player
     }
 
     fun play() {

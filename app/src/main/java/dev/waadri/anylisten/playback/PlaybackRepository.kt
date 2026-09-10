@@ -1,6 +1,11 @@
 package dev.waadri.anylisten.playback
 
 import android.content.Context
+import android.content.Intent
+import android.app.PendingIntent
+import androidx.media3.common.Player
+import androidx.media3.session.MediaSession
+import dev.waadri.anylisten.MainActivity
 import dev.waadri.anylisten.data.remote.AppSettings
 import dev.waadri.anylisten.data.remote.M2cCodec
 import dev.waadri.anylisten.data.remote.PlayMethod
@@ -60,11 +65,21 @@ data class PlaybackUiState(
  * is harmless and guarantees convergence if another device drives playback.
  */
 class PlaybackRepository(
-    context: Context,
+    appContext: Context,
     private val scope: CoroutineScope,
 ) {
-    private val engine = AudioEngine(context, scope)
+    private val engine = AudioEngine(appContext, scope)
     private val random = Random()
+
+    /** Application context, used to raise the foreground service and build the media session. */
+    private val context: Context = appContext.applicationContext
+
+    /**
+     * Published to the system through [PlaybackService]. Owned here rather than by the service
+     * so the session and the player can never come from different places.
+     */
+    var mediaSession: MediaSession? = null
+        private set
 
     private var socket: RpcSocket? = null
     private var baseUrl: String = ""
@@ -180,11 +195,68 @@ class PlaybackRepository(
             return
         }
 
-        engine.setSource(absoluteUrl(url), startPositionMs)
+        engine.setSource(absoluteUrl(url), startPositionMs, mediaMetadataFor(music))
+        ensureMediaSession()
         if (autoPlay) {
             userWantsPlaying = true
+            startPlaybackService()
             engine.play()
         }
+        publish()
+    }
+
+    // ------------------------------------------------------------------ background playback
+
+    /**
+     * Builds the [MediaSession] that the foreground service publishes to the system.
+     *
+     * It wraps the same ExoPlayer instance the UI drives, so lock-screen and notification
+     * controls go through one audio pipeline rather than a parallel one. Built lazily because a
+     * session needs a player to point at.
+     */
+    private fun ensureMediaSession() {
+        if (mediaSession != null) return
+        val player = engine.playerOrNull() ?: return
+        val activityIntent = PendingIntent.getActivity(
+            context,
+            0,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        mediaSession = MediaSession.Builder(context, player)
+            .setSessionActivity(activityIntent)
+            .setCallback(object : MediaSession.Callback {
+                override fun onConnect(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                ): MediaSession.ConnectionResult =
+                    MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                        .setAvailablePlayerCommands(
+                            MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
+                                // The queue is owned by the server. Letting the platform add or
+                                // replace items would build a local queue the server knows
+                                // nothing about, and the two would disagree on the next skip.
+                                .remove(Player.COMMAND_SET_MEDIA_ITEM)
+                                .remove(Player.COMMAND_CHANGE_MEDIA_ITEMS)
+                                .build(),
+                        )
+                        .build()
+            })
+            .build()
+    }
+
+    /** Brings up the foreground service so playback survives the UI going away. */
+    private fun startPlaybackService() {
+        runCatching { context.startForegroundService(Intent(context, PlaybackService::class.java)) }
+            .onFailure { /* foreground-start restrictions; playback still works in-process */ }
+    }
+
+    /** Called when the user swipes the app away: stop rather than keep playing invisibly. */
+    fun stopForTaskRemoval() {
+        userWantsPlaying = false
+        engine.stop()
         publish()
     }
 
@@ -484,6 +556,8 @@ class PlaybackRepository(
 
     fun release() {
         detachSocket()
+        mediaSession?.release()
+        mediaSession = null
         engine.release()
     }
 
