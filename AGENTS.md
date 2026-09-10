@@ -94,6 +94,29 @@ any-listen-android/
 - ❌ 修改 any-listen 服务端代码——本项目是纯客户端，服务端行为差异应通过兼容层解决。
 - ❌ 文档类更改也**必须**走 PR 流程，不允许直接提交 `main`。
 
+## 协议陷阱（改 `data/remote/` 或 `playback/` 前必读）
+
+以下每一条都曾导致过「编译通过、测试通过、装到手机上却完全不工作」的问题，改动相关代码时必须保留其处理逻辑：
+
+1. **`app.inited` 每次重连都要重发。**
+   服务端广播普遍带 `if (socket.winType != 'main' || !socket.isInited) return`，而 `isInited` 是 **per-socket** 状态，重连后归零。漏发的表现是「连上了但永远收不到任何推送」，且不报错。
+
+2. **`toggle` 不可原样上报，必须上报实际执行的 `play`/`pause`。**
+   服务端用**它自己的** `playing` 标志解析 `toggle`，而该标志只由客户端上报的 `status` 更新。转发 `toggle` 会让服务端多切一首。
+
+3. **`musicChanged` 是纯通知，队列需客户端自行更新。**
+   服务端处理切歌时**不改写自己存储的队列**（消息内的 `list`/`index` 是变更前快照）。只从服务端重载队列会永远跟不上切歌；而目标曲目已正确播放时又不能重载，否则歌从头重放。
+
+4. **收发方法路径不对称。**
+   服务端 → 客户端为**裸方法名**（`playerEvent`、`playerAction`、`playListAction`，`createRemoteGroup` 的分组名不上线）；客户端 → 服务端**要带前缀**（`player.getPlayInfo`、`music.getMusicUrl`、`app.inited`、`list.getUserLists`），因为对应服务端 `exposeObj` 的嵌套层级。
+
+5. **进度上报是单向的。**
+   持有播放的一端上报 `progress`；本端必须忽略自己的回声，否则与播放器状态互搏。
+
+6. **`player.playListAction({action:'set'})` 是客户端改队列的唯一途径**，且只替换队列、**不启动播放**——播放要客户端本地发起。顺序必须是「服务端先接受队列 → 再本地播放」，否则紧随的 `next` 会用旧列表算后继。
+
+改动上述任一环节时，请同步更新 `README.md` 的协议说明，并保证 `app/src/test/` 中有对应覆盖。
+
 ## 适用对象
 
 - 本守则适用于所有人工与代理提交；冲突时以本文件为准。
