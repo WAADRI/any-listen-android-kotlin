@@ -30,6 +30,20 @@
             </intent-filter>
         </activity>
 
+        <!--
+            Keeps audio playing when the UI is gone and publishes transport controls to the lock
+            screen and notification shade. mediaPlayback requires FOREGROUND_SERVICE_MEDIA_PLAYBACK
+            on API 34+, which is declared above.
+        -->
+        <service
+            android:name=".playback.PlaybackService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
+
     </application>
 
 </manifest>
