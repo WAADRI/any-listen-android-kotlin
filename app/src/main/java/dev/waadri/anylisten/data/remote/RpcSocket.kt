@@ -15,7 +15,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -176,6 +178,40 @@ class RpcSocket(
         return M2cCodec.json.decodeFromJsonElement(Wire.MusicUrlInfo.serializer(), result)
     }
 
+    // ------------------------------------------------------------------ music library
+
+    /** `list.getAllUserLists()`: the built-in lists plus the user's own. */
+    suspend fun getAllUserLists(): Wire.MyAllList {
+        val result = call(OUT_LIST_GET_ALL_USER_LISTS.split("."))
+            ?: return Wire.MyAllList()
+        return M2cCodec.json.decodeFromJsonElement(Wire.MyAllList.serializer(), result)
+    }
+
+    /** `list.getListMusics(listId)`: the tracks of one list. */
+    suspend fun getListMusics(listId: String): List<ListMusicEntry> {
+        val result = call(OUT_LIST_GET_MUSICS.split("."), listOf(JsonPrimitive(listId)))
+            ?: return emptyList()
+        return M2cCodec.json.decodeFromJsonElement(
+            ListSerializer(ListMusicEntry.serializer()),
+            result,
+        )
+    }
+
+    /**
+     * `player.playListAction({action: 'set', data})` — replaces the session's play queue.
+     *
+     * This is the only way a client can start a specific list: the queue's authoritative copy
+     * lives on the server and this call broadcasts the replacement to every ready client. It
+     * does NOT start playback; the caller plays locally, exactly as the web client does.
+     */
+    suspend fun setPlayList(listId: String?, list: List<Wire.PlayMusicInfo>, source: String) {
+        val payload = M2cCodec.json.encodeToJsonElement(
+            Wire.PlayListSetAction.serializer(),
+            Wire.PlayListSetAction(listId = listId, list = list, source = source),
+        )
+        call(OUT_PLAYER_PLAY_LIST_ACTION.split("."), listOf(M2cCodec.actionPayload("set", payload)))
+    }
+
     // ------------------------------------------------------------------ internals
 
     private suspend fun connectLoop() {
@@ -333,6 +369,9 @@ class RpcSocket(
         /** Outgoing paths, which DO follow the server's `exposeObj` nesting. */
         const val OUT_PLAYER_GET_PLAY_INFO = "player.getPlayInfo"
         const val OUT_PLAYER_ACTION = "player.playerAction"
+        const val OUT_PLAYER_PLAY_LIST_ACTION = "player.playListAction"
+        const val OUT_LIST_GET_ALL_USER_LISTS = "list.getAllUserLists"
+        const val OUT_LIST_GET_MUSICS = "list.getListMusics"
         const val OUT_MUSIC_GET_URL = "music.getMusicUrl"
         const val OUT_MUSIC_GET_PIC = "music.getMusicPic"
         const val OUT_MUSIC_GET_LYRIC = "music.getMusicLyric"

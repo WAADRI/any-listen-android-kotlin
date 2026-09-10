@@ -222,6 +222,13 @@ object M2cCodec {
         return primitive.content.toBooleanStrictOrNull() ?: primitive.longOrNull()?.let { it != 0L }
     }
 
+    /** Property readers for loosely-typed server objects (see the summary parsing in [Library]). */
+    fun stringAt(node: JsonObject?, key: String): String? =
+        (node?.get(key) as? JsonPrimitive)?.contentOrNull
+
+    fun intAt(node: JsonObject?, key: String): Int? =
+        (node?.get(key) as? JsonPrimitive)?.content?.toDoubleOrNull()?.toInt()
+
     fun asArray(element: kotlinx.serialization.json.JsonElement?): JsonArray? =
         element as? JsonArray
 }
