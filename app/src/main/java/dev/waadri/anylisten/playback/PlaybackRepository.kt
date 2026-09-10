@@ -104,7 +104,11 @@ class PlaybackRepository(
             if (element != null && element !is JsonNull) {
                 val action = playerActionOf(element)
                 if (action != null) {
-                    scope.launch { dispatch(action.action, action.data, fromRemote = true) }
+                    scope.launch {
+                        // Server-originated actions are already known to the server, so nothing
+                        // is reported back. Echoing them would double every remote command.
+                        dispatch(action.action, action.data)
+                    }
                 }
             }
             null
@@ -260,8 +264,8 @@ class PlaybackRepository(
     /** Local UI entry point: apply immediately, then report upstream. */
     fun perform(action: String, data: JsonElement? = null) {
         scope.launch {
-            dispatch(action, data, fromRemote = false)
-            reportAction(action, data)
+            val reported = dispatch(action, data)
+            if (reported != null) reportAction(reported.first, reported.second)
         }
     }
 
@@ -269,7 +273,19 @@ class PlaybackRepository(
         runCatching { socket?.playerAction(action, data) }
     }
 
-    private suspend fun dispatch(action: String, data: JsonElement?, fromRemote: Boolean) {
+    /**
+     * Applies an action and returns the action that should be reported upstream, or null when
+     * nothing should be reported.
+     *
+     * The return value exists because "toggle" must NOT be forwarded verbatim. The server
+     * resolves `toggle` against its OWN `playing` flag, and its flag is only updated by the
+     * status we report — so forwarding `toggle` before reporting the resulting state makes the
+     * server advance the queue a second time. Reporting the concrete `play`/`pause` we actually
+     * performed is what keeps local and server state identical, and it is what the web client
+     * does too.
+     */
+    private suspend fun dispatch(action: String, data: JsonElement?): Pair<String, JsonElement?>? {
+        var reported = action to data
         when (action) {
             "play" -> {
                 userWantsPlaying = true
@@ -282,11 +298,18 @@ class PlaybackRepository(
             }
 
             "toggle" -> {
-                userWantsPlaying = !userWantsPlaying
                 if (userWantsPlaying) {
-                    if (!engine.hasSource()) currentTrack()?.let { loadAndPlay(it, autoPlay = true) } else engine.play()
-                } else {
+                    userWantsPlaying = false
                     engine.pause()
+                    reported = "pause" to null
+                } else {
+                    userWantsPlaying = true
+                    if (!engine.hasSource()) {
+                        currentTrack()?.let { loadAndPlay(it, autoPlay = true) }
+                    } else {
+                        engine.play()
+                    }
+                    reported = "play" to null
                 }
             }
 
@@ -296,30 +319,30 @@ class PlaybackRepository(
             }
 
             "seek" -> {
-                val seconds = (data as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return
+                val seconds = (data as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return null
                 engine.seekTo((seconds * 1000).toLong())
             }
 
             "volume" -> {
-                val v = (data as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return
+                val v = (data as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return null
                 engine.setVolume(v.toFloat())
             }
 
             "volumeMute" -> {
-                val muted = (data as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: return
+                val muted = (data as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: return null
                 engine.setMuted(muted)
             }
 
             "playbackRate" -> {
-                val rate = (data as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return
+                val rate = (data as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return null
                 engine.setPlaybackRate(rate.toFloat())
             }
 
-            "next" -> advance(PlayOrderResolver.next(snapshot()), forward = true)
+            "next" -> advance(PlayOrderResolver.next(snapshot(), random), forward = true)
             "prev" -> advance(PlayOrderResolver.prev(snapshot()), forward = false)
 
             "skip" -> {
-                val itemId = (data as? JsonPrimitive)?.content ?: return
+                val itemId = (data as? JsonPrimitive)?.content ?: return null
                 val index = queue.indexOfFirst { it.itemId == itemId }
                 if (index >= 0) {
                     currentIndex = index
@@ -327,15 +350,20 @@ class PlaybackRepository(
                 }
             }
 
-            // Reported back to the server by other modules (dislike → list refreshes).
-            "collectStatus" -> Unit
-            "lyricOffset" -> Unit
-            "dislike" -> Unit
-            else -> Unit
+            // Handled by other modules (dislike refreshes the list); accepted so the dispatch
+            // table stays total against the server's action vocabulary.
+            "collectStatus", "lyricOffset", "dislike" -> Unit
+
+            else -> return null
         }
         publish()
+        return reported
     }
 
+    /**
+     * Applies a decision produced by [PlayOrderResolver]. [forward] only affects how the history
+     * cursor moves, which random mode reads back on the next skip.
+     */
     private suspend fun advance(decision: PlayOrderDecision, forward: Boolean) {
         when (decision) {
             is PlayOrderDecision.Play -> {
@@ -364,7 +392,6 @@ class PlaybackRepository(
     )
 
     private fun currentTrack(): Wire.PlayMusicInfo? = queue.getOrNull(currentIndex)
-
     // ------------------------------------------------------------------ auto advance
 
     private suspend fun observeEngine() {
@@ -401,7 +428,14 @@ class PlaybackRepository(
                 loadAndPlay(decision.music, autoPlay = true)
             }
 
-            PlayOrderDecision.Stop -> advance(PlayOrderDecision.Stop, forward = true)
+            PlayOrderDecision.Stop -> {
+                // End of the queue under the current mode. Inlined rather than delegated to
+                // `advance`, which is for user-initiated skips and would read oddly here.
+                userWantsPlaying = false
+                engine.stop()
+                reportAction("stop", null)
+                publish()
+            }
         }
     }
 
