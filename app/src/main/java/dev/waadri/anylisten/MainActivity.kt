@@ -21,14 +21,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.waadri.anylisten.ui.browse.BrowseScreen
+import dev.waadri.anylisten.ui.browse.BrowseViewModel
 import dev.waadri.anylisten.ui.connect.ConnectScreen
 import dev.waadri.anylisten.ui.connect.ConnectViewModel
 import dev.waadri.anylisten.ui.player.PlayerScreen
 import dev.waadri.anylisten.ui.player.PlayerViewModel
 import dev.waadri.anylisten.ui.theme.AnyListenTheme
 
-/** Which screen is showing. Navigation is one flag; a nav graph would be noise at two screens. */
-private enum class Screen { PLAYER, SETTINGS }
+/** Which screen is showing. Navigation is one flag; a nav graph would be noise at three screens. */
+private enum class Screen { PLAYER, BROWSE, SETTINGS }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,8 +63,8 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
 
     NotificationPermissionRequest()
 
-    // Back from settings returns to the player rather than leaving the app.
-    BackHandler(enabled = screen == Screen.SETTINGS) { screen = Screen.PLAYER }
+    // Back always returns to the player: it is the home screen of this app.
+    BackHandler(enabled = screen != Screen.PLAYER) { screen = Screen.PLAYER }
 
     when (screen) {
         Screen.PLAYER -> PlayerScreen(
@@ -73,8 +75,23 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
             onPrevious = playerViewModel::previous,
             onSeek = playerViewModel::seekTo,
             onOpenSettings = { screen = Screen.SETTINGS },
+            onOpenBrowse = { screen = Screen.BROWSE },
             modifier = modifier,
         )
+
+        Screen.BROWSE -> {
+            val browseViewModel: BrowseViewModel = viewModel()
+            val browseState by browseViewModel.state.collectAsStateWithLifecycle()
+            BrowseScreen(
+                state = browseState,
+                onBack = { screen = Screen.PLAYER },
+                onOpenList = browseViewModel::openList,
+                onCloseList = browseViewModel::closeList,
+                onPlay = browseViewModel::play,
+                onRefresh = browseViewModel::refresh,
+                modifier = modifier,
+            )
+        }
 
         Screen.SETTINGS -> ConnectScreen(
             form = form,

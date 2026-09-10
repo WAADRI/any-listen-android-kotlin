@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -63,6 +64,7 @@ fun PlayerScreen(
     onPrevious: () -> Unit,
     onSeek: (Double) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenBrowse: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -79,6 +81,15 @@ fun PlayerScreen(
                 OfflineNotice()
             }
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = onOpenBrowse) {
+                Icon(
+                    imageVector = Icons.Filled.QueueMusic,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("音乐库")
+            }
             TextButton(onClick = onOpenSettings) {
                 Icon(
                     imageVector = Icons.Filled.Settings,

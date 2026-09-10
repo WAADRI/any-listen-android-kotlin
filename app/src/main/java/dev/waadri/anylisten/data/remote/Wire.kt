@@ -199,4 +199,31 @@ object Wire {
     data class PlayHistorySetAction(
         val list: List<HistoryItem> = emptyList(),
     )
+
+    // ---------------------------------------------------------------- music library
+
+    /**
+     * `list.getAllUserLists()` result.
+     *
+     * The three built-in lists are separate keys and the user's own lists are an array, which is
+     * why they are modelled separately rather than as one list. Metadata is decoded as a raw
+     * `JsonObject` because its shape differs per list type (general/local/online/remote) and only
+     * a few fields are ever read — see [Library.summaries].
+     */
+    @Serializable
+    data class MyAllList(
+        val defaultList: MyListEntry? = null,
+        val loveList: MyListEntry? = null,
+        val lastPlayList: MyListEntry? = null,
+        val userList: List<MyListEntry> = emptyList(),
+    )
+
+    @Serializable
+    data class MyListEntry(
+        val id: String = "",
+        val parentId: String? = null,
+        val name: String = "",
+        val type: String = "",
+        val meta: kotlinx.serialization.json.JsonObject? = null,
+    )
 }

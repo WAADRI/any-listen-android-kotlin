@@ -7,6 +7,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaSession
 import dev.waadri.anylisten.MainActivity
 import dev.waadri.anylisten.data.remote.AppSettings
+import dev.waadri.anylisten.data.remote.Library
 import dev.waadri.anylisten.data.remote.M2cCodec
 import dev.waadri.anylisten.data.remote.PlayMethod
 import dev.waadri.anylisten.data.remote.RpcSocket
@@ -125,6 +126,13 @@ class PlaybackRepository(
                         dispatch(action.action, action.data)
                     }
                 }
+            }
+            null
+        }
+        socket.on(RpcSocket.INCOMING_PLAY_LIST_ACTION) { args ->
+            val element = args.firstOrNull()?.value
+            if (element != null && element !is JsonNull) {
+                scope.launch { handlePlayListAction(element) }
             }
             null
         }
@@ -295,7 +303,6 @@ class PlaybackRepository(
         // No-op by design. Kept explicit so the asymmetry is documented rather than accidental.
         if (data == null) return
     }
-
     private fun applyRemoteStatus(data: JsonElement?) {
         val array = M2cCodec.asArray(data) ?: return
         val playing = M2cCodec.booleanAt(array, Wire.StatusEventData.INDEX_PLAYING) ?: return
@@ -305,21 +312,77 @@ class PlaybackRepository(
     }
 
     private suspend fun applyMusicChanged(data: JsonElement?) {
+        if (data == null) return
         val changed = runCatching {
-            M2cCodec.json.decodeFromJsonElement(Wire.MusicChangedData.serializer(), data ?: return)
+            M2cCodec.json.decodeFromJsonElement(Wire.MusicChangedData.serializer(), data)
         }.getOrNull() ?: return
 
+        // A `skip` command has already started the right track locally; reloading it would
+        // restart the song from zero.
+        val target = queue.getOrNull(changed.index)
+        if (target != null && target.itemId == _state.value.track?.itemId) return
+
         currentIndex = changed.index.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
-        historyIndex = changed.historyIndex
+        if (changed.historyIndex >= 0) historyIndex = changed.historyIndex
         val music = queue.getOrNull(currentIndex) ?: return
         loadAndPlay(music, autoPlay = userWantsPlaying)
     }
 
+    /**
+     * An explicit "start playing" from another device carries the whole session state, so a full
+     * resync is both the simplest and the most correct response — it picks up the queue, the
+     * index and the position together.
+     */
     private suspend fun applyPlayInfoUpdated(data: JsonElement?) {
-        // The server sends a partial PlayInfo; a full resync is cheaper than diffing it and is
-        // what makes "list changed on another device" converge here.
         if (data == null) return
         syncFromServer()
+    }
+
+    // ------------------------------------------------------------------ play list changes
+
+    /**
+     * Queue changes broadcast by the server.
+     *
+     * Note the asymmetry with `musicChanged`: the server does NOT mutate its stored queue for a
+     * track change — that message is pure notification — so a client that only ever reloaded its
+     * queue from the server would never actually follow a skip. Keeping the queue in step here is
+     * the client's job.
+     *
+     * Only `set` and `remove` are handled; they are what playback correctness depends on.
+     * Reordering, played/unplayed marking and position updates are cosmetic and a resync on the
+     * next explicit command covers them.
+     */
+    private suspend fun handlePlayListAction(element: JsonElement) {
+        val action = element as? JsonObject ?: return
+        val name = M2cCodec.stringAt(action, "action") ?: return
+
+        when (name) {
+            "set" -> {
+                val data = action["data"] ?: return
+                val set = runCatching {
+                    M2cCodec.json.decodeFromJsonElement(Wire.PlayListSetAction.serializer(), data)
+                }.getOrNull() ?: return
+                val currentId = _state.value.track?.itemId
+                queue = set.list
+                currentIndex = queue.indexOfFirst { it.itemId == currentId }.takeIf { it >= 0 } ?: 0
+                historyList = emptyList()
+                historyIndex = 0
+                publish()
+            }
+
+            "remove" -> {
+                val ids = M2cCodec.asArray(action["data"])
+                    ?.mapNotNull { (it as? JsonPrimitive)?.content }
+                    .orEmpty()
+                if (ids.isEmpty()) return
+                val currentId = _state.value.track?.itemId
+                queue = queue.filterNot { ids.contains(it.itemId) }
+                currentIndex = queue.indexOfFirst { it.itemId == currentId }.takeIf { it >= 0 } ?: 0
+                publish()
+            }
+
+            else -> Unit
+        }
     }
 
     /**
@@ -464,6 +527,64 @@ class PlaybackRepository(
     )
 
     private fun currentTrack(): Wire.PlayMusicInfo? = queue.getOrNull(currentIndex)
+
+    // ------------------------------------------------------------------ library browse
+
+    /**
+     * Loads the list of playlists. Kept in the repository rather than a separate one because a
+     * tap on a song has to replace the play queue, which only this class may do.
+     */
+    suspend fun loadLists(): Result<List<Library.ListSummary>> = runCatching {
+        val socket = socket ?: throw IllegalStateException("尚未连接服务端")
+        Library.summaries(socket.getAllUserLists())
+    }
+
+    suspend fun loadListMusics(listId: String): Result<List<Wire.PlayMusicInfo>> = runCatching {
+        val socket = socket ?: throw IllegalStateException("尚未连接服务端")
+        socket.getListMusics(listId).map { entry ->
+            Wire.PlayMusicInfo(
+                // The queue's identity is `listId` + track id. Using the bare track id would
+                // collide for a song present in two lists, which any-listen explicitly supports.
+                itemId = "$listId::${entry.id}",
+                musicInfo = entry.toMusicInfo(),
+                listId = listId,
+                source = SOURCE_SONG_LIST,
+                playLater = false,
+                played = false,
+            )
+        }
+    }
+
+    /**
+     * Starts a list at [index]: replaces the session queue on the server, then plays locally.
+     *
+     * Order matters. The server's broadcast of the new queue is what other devices react to, and
+     * playing before the queue exists locally would leave the very next `next` command computing
+     * its successor from the old list.
+     */
+    suspend fun playFromList(listId: String, list: List<Wire.PlayMusicInfo>, index: Int) {
+        val track = list.getOrNull(index) ?: return
+        val socket = socket ?: return
+
+        runCatching { socket.setPlayList(listId, list, SOURCE_SONG_LIST) }
+
+        queue = list
+        currentIndex = index
+        historyList = emptyList()
+        historyIndex = 0
+        userWantsPlaying = true
+        publish()
+
+        loadAndPlay(track, autoPlay = true)
+    }
+
+    /** User-initiated stop used by the browse screen's "clear" affordance. */
+    fun stopPlayback() {
+        scope.launch {
+            dispatch("stop", null)
+            reportAction("stop", null)
+        }
+    }
     // ------------------------------------------------------------------ auto advance
 
     private suspend fun observeEngine() {
@@ -563,6 +684,13 @@ class PlaybackRepository(
 
     companion object {
         const val PROGRESS_INTERVAL_MS = 1_000L
+
+        /**
+         * `Player.SourceType` for a track started from a user playlist. The server uses this to
+         * decide how to resolve a stream URL, so it must match the value the web client sends
+         * when starting playback from a list.
+         */
+        const val SOURCE_SONG_LIST = "songlist"
 
         /** `mm:ss`, matching the format the server stores and re-broadcasts. */
         fun formatTime(totalSeconds: Double): String {
