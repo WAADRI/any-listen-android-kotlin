@@ -44,7 +44,7 @@ class LibraryTest {
 
     @Test
     fun `names and song counts are read`() {
-        val all = Wire.MyAllList(loveList = list("love", "我喜欢", songCount = 42))
+        val all = Wire.MyAllList(loveList = list("love", "我喜欢", type = "default", songCount = 42))
 
         val summary = Library.summaries(all).single()
 
