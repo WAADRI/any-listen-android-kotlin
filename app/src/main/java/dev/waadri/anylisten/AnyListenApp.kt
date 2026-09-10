@@ -3,6 +3,7 @@ package dev.waadri.anylisten
 import android.app.Application
 import dev.waadri.anylisten.data.config.ConfigStore
 import dev.waadri.anylisten.domain.ClientSession
+import dev.waadri.anylisten.domain.LyricsRepository
 import dev.waadri.anylisten.playback.PlaybackRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,15 +23,26 @@ class AppContainer(application: Application) {
     val configStore: ConfigStore = ConfigStore(application)
 
     /**
-     * The player takes the config store directly: playback preferences (volume, mode, resume
+     * The player takes the config store directly: playback preferences (play mode and the resume
      * point) are this device's own and are persisted locally rather than on the server.
      */
     val playback: PlaybackRepository = PlaybackRepository(application, scope, configStore)
 
     val clientSession: ClientSession = ClientSession(
         scope = scope,
-        onSocketChanged = { socket, baseUrl -> playback.attachSocket(socket, baseUrl) },
+        onSocketChanged = { socket, baseUrl ->
+            playback.attachSocket(socket, baseUrl)
+            lyrics.attachSocket(socket)
+        },
     )
+
+    /**
+     * Lyrics are a separate collaborator from playback so a lyric fetch can never stall the
+     * playhead. It observes the player rather than being called by it.
+     */
+    val lyrics: LyricsRepository = LyricsRepository(scope, configStore).also { repository ->
+        repository.observe(playback.state)
+    }
 
     fun shutdown() {
         playback.release()

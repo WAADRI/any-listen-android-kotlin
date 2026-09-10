@@ -25,12 +25,14 @@ import dev.waadri.anylisten.ui.browse.BrowseScreen
 import dev.waadri.anylisten.ui.browse.BrowseViewModel
 import dev.waadri.anylisten.ui.connect.ConnectScreen
 import dev.waadri.anylisten.ui.connect.ConnectViewModel
+import dev.waadri.anylisten.ui.lyrics.LyricsScreen
+import dev.waadri.anylisten.ui.lyrics.LyricsViewModel
 import dev.waadri.anylisten.ui.player.PlayerScreen
 import dev.waadri.anylisten.ui.player.PlayerViewModel
 import dev.waadri.anylisten.ui.theme.AnyListenTheme
 
-/** Which screen is showing. Navigation is one flag; a nav graph would be noise at three screens. */
-private enum class Screen { PLAYER, BROWSE, SETTINGS }
+/** Which screen is showing. Navigation is one flag; a nav graph would be noise at four screens. */
+private enum class Screen { PLAYER, BROWSE, LYRICS, SETTINGS }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,9 +78,25 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
             onSeek = playerViewModel::seekTo,
             onOpenSettings = { screen = Screen.SETTINGS },
             onOpenBrowse = { screen = Screen.BROWSE },
+            onOpenLyrics = { screen = Screen.LYRICS },
             onCyclePlayMethod = playerViewModel::cyclePlayMethod,
             modifier = modifier,
         )
+
+        Screen.LYRICS -> {
+            val lyricsViewModel: LyricsViewModel = viewModel()
+            val lyricsState by lyricsViewModel.state.collectAsStateWithLifecycle()
+            val showTranslation by lyricsViewModel.showTranslation.collectAsStateWithLifecycle()
+            LyricsScreen(
+                state = lyricsState,
+                showTranslation = showTranslation,
+                onBack = { screen = Screen.PLAYER },
+                onRefresh = lyricsViewModel::refresh,
+                onToggleTranslation = lyricsViewModel::setTranslationEnabled,
+                onSeekToLine = lyricsViewModel::seekToLine,
+                modifier = modifier,
+            )
+        }
 
         Screen.BROWSE -> {
             val browseViewModel: BrowseViewModel = viewModel()

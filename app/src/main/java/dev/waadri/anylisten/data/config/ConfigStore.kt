@@ -50,6 +50,8 @@ data class PlaybackPreferences(
     val lastPositionMs: Long = 0L,
     /** Restore the queue on launch instead of waiting for the user to pick a list. */
     val resumeOnLaunch: Boolean = true,
+    /** Show the translation line under the original lyric. A local display preference. */
+    val showTranslation: Boolean = true,
 )
 
 /**
@@ -119,6 +121,20 @@ class ConfigStore(private val context: Context) {
         context.configStore.edit { prefs -> prefs[KEY_RESUME_ON_LAUNCH] = enabled }
     }
 
+    suspend fun saveShowTranslation(enabled: Boolean) {
+        context.configStore.edit { prefs -> prefs[KEY_SHOW_TRANSLATION] = enabled }
+    }
+
+    /**
+     * The translation toggle on its own, as a flow.
+     *
+     * Exposed separately from [playback] so the lyric pane can recompose on this one boolean
+     * without re-reading the whole preference set on every playback tick.
+     */
+    val playbackShowTranslation: Flow<Boolean> = context.configStore.data.map { prefs ->
+        prefs[KEY_SHOW_TRANSLATION] ?: true
+    }
+
     private fun Preferences.toPlayback() = PlaybackPreferences(
         playMethod = PlayMethod.fromWire(this[KEY_PLAY_METHOD]),
         playQuality = this[KEY_PLAY_QUALITY]?.takeIf { it.isNotBlank() },
@@ -126,6 +142,7 @@ class ConfigStore(private val context: Context) {
         lastTrackIndex = this[KEY_LAST_TRACK_INDEX] ?: 0,
         lastPositionMs = this[KEY_LAST_POSITION_MS] ?: 0L,
         resumeOnLaunch = this[KEY_RESUME_ON_LAUNCH] ?: true,
+        showTranslation = this[KEY_SHOW_TRANSLATION] ?: true,
     )
 
     private companion object {
@@ -139,5 +156,6 @@ class ConfigStore(private val context: Context) {
         val KEY_LAST_TRACK_INDEX = intPreferencesKey("playback_last_track_index")
         val KEY_LAST_POSITION_MS = longPreferencesKey("playback_last_position")
         val KEY_RESUME_ON_LAUNCH = booleanPreferencesKey("playback_resume_on_launch")
+        val KEY_SHOW_TRANSLATION = booleanPreferencesKey("lyrics_show_translation")
     }
 }

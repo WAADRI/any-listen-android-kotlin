@@ -70,6 +70,7 @@ fun PlayerScreen(
     onSeek: (Double) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenBrowse: () -> Unit,
+    onOpenLyrics: () -> Unit,
     onCyclePlayMethod: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -87,6 +88,15 @@ fun PlayerScreen(
                 OfflineNotice()
             }
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = onOpenLyrics) {
+                Icon(
+                    imageVector = Icons.Filled.QueueMusic,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("歌词")
+            }
             TextButton(onClick = onOpenBrowse) {
                 Icon(
                     imageVector = Icons.Filled.QueueMusic,
@@ -103,7 +113,7 @@ fun PlayerScreen(
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(6.dp))
-                Text("服务器")
+                Text("设置")
             }
         }
 
