@@ -2,6 +2,8 @@ package dev.waadri.anylisten.ui.connect
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,6 +22,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import dev.waadri.anylisten.data.remote.PlayMethod
 import dev.waadri.anylisten.domain.ConnectionPhase
 
 @Composable
@@ -49,6 +54,8 @@ fun ConnectScreen(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenPlayer: () -> Unit,
+    onPlayMethodChange: (PlayMethod) -> Unit,
+    onResumeOnLaunchChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val busy = phase is ConnectionPhase.Authenticating ||
@@ -129,6 +136,40 @@ fun ConnectScreen(
                 enabled = !busy,
             )
         }
+
+        HorizontalDivider()
+
+        Text("播放设置", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "以下设置只保存在这台手机上，不会同步到服务端。音量由系统媒体音量控制。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        PlayMethodPicker(
+            selected = form.playMethod,
+            onSelect = onPlayMethodChange,
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("启动时恢复上次播放", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "重新加载上次的歌单与进度，不会自动开始播放",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = form.resumeOnLaunch,
+                onCheckedChange = onResumeOnLaunchChange,
+            )
+        }
+
+        HorizontalDivider()
 
         when (phase) {
             is ConnectionPhase.Connected -> {
@@ -215,6 +256,40 @@ fun ConnectScreen(
             }
         }
     }
+}
+
+/**
+ * Play-order picker.
+ *
+ * All five modes are offered here, including "播完停止" — unlike the player's tap-to-cycle button,
+ * which skips it. A settings screen has room to be explicit.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PlayMethodPicker(
+    selected: PlayMethod,
+    onSelect: (PlayMethod) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("播放顺序", style = MaterialTheme.typography.bodyLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PlayMethod.entries.forEach { method ->
+                FilterChip(
+                    selected = method == selected,
+                    onClick = { onSelect(method) },
+                    label = { Text(playMethodLabel(method)) },
+                )
+            }
+        }
+    }
+}
+
+private fun playMethodLabel(method: PlayMethod): String = when (method) {
+    PlayMethod.LIST_LOOP -> "列表循环"
+    PlayMethod.RANDOM -> "随机播放"
+    PlayMethod.LIST -> "顺序播放"
+    PlayMethod.SINGLE_LOOP -> "单曲循环"
+    PlayMethod.STOP_AT_END -> "播完停止"
 }
 
 @Composable

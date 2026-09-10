@@ -17,8 +17,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -176,6 +177,17 @@ class RpcSocket(
         val result = call(OUT_MUSIC_GET_URL.split("."), listOf(payload))
             ?: throw RpcException("getMusicUrl 返回空结果")
         return M2cCodec.json.decodeFromJsonElement(Wire.MusicUrlInfo.serializer(), result)
+    }
+
+    /**
+     * `app.setSetting(partial)` — writes server-side settings.
+     *
+     * The server accepts a partial object and, once applied, broadcasts `settingChanged` to every
+     * ready client. Playback mode is stored here rather than being kept client-side, so this is
+     * the only way to change it.
+     */
+    suspend fun setSetting(setting: JsonObject) {
+        call(OUT_APP_SET_SETTING.split("."), listOf(setting))
     }
 
     // ------------------------------------------------------------------ music library
@@ -365,6 +377,7 @@ class RpcSocket(
         const val INCOMING_PLAYER_ACTION = "playerAction"
         const val INCOMING_PLAY_LIST_ACTION = "playListAction"
         const val INCOMING_PLAY_HISTORY_LIST_ACTION = "playHistoryListAction"
+        const val INCOMING_SETTING_CHANGED = "settingChanged"
 
         /** Outgoing paths, which DO follow the server's `exposeObj` nesting. */
         const val OUT_PLAYER_GET_PLAY_INFO = "player.getPlayInfo"
@@ -376,6 +389,7 @@ class RpcSocket(
         const val OUT_MUSIC_GET_PIC = "music.getMusicPic"
         const val OUT_MUSIC_GET_LYRIC = "music.getMusicLyric"
         const val OUT_APP_INITED = "app.inited"
+        const val OUT_APP_SET_SETTING = "app.setSetting"
 
         const val EVENT_PROTOCOL_ERROR = "protocolError"
 
