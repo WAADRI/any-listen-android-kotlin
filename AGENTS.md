@@ -143,6 +143,9 @@ any-listen-android/
 7. **除曲库与歌词外不要依赖服务端状态。**
    队列、索引、播放模式都是本地的；服务端返回的播放信息只在浏览曲库时使用。
 
+8. **`attachSocket` 回调触发时，socket 还没有 `start()`。**
+   `ClientSession` 是**先**调用 `onSocketChanged(socket, url)`、**后**才 `socket.start()`（见 `ClientSession.kt`）。此刻 `RpcState` 仍是 `Idle`，**在该回调里直接发 RPC 必定立刻失败**。已有教训：启动续播原本就在这个回调里直接读歌单，于是每次都失败——功能「看起来实现了」却一次都没生效，而且**不报错、无日志**。正确做法是等 `socket.state` 发出 `Connected` 再发请求（见 `PlaybackRepository.observeResume`），这样首次连接失败后重连成功仍能自愈。**凡是要在连接建立后才做的初始化，都必须挂在 `Connected` 上，不能挂在 `attachSocket` 上。**
+
 改动上述任一环节时，请同步更新 `README.md` 的说明，并保证 `app/src/test/` 中有对应覆盖。
 
 ## 适用对象
