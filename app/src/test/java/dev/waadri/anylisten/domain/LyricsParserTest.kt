@@ -25,7 +25,6 @@ class LyricsParserTest {
         val lyrics = LyricsParser.parse("[00:01.00]first\n[00:05.50]second\n")
 
         assertEquals(2, lyrics.lines.size)
-        assertEquals(0, lyrics.lines[0].timeMs)
         assertEquals("first", lyrics.lines[0].text)
         assertEquals(1_000L, lyrics.lines[0].timeMs)
         assertEquals(5_500L, lyrics.lines[1].timeMs)
