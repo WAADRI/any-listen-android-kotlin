@@ -48,6 +48,7 @@ fun ConnectScreen(
     onTogglePasswordVisible: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    onOpenPlayer: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val busy = phase is ConnectionPhase.Authenticating ||
@@ -144,10 +145,13 @@ fun ConnectScreen(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Text(
-                            "后续功能将在此会话上进行",
+                            "播放与控制现在都在这台设备上进行",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
+                }
+                Button(onClick = onOpenPlayer, modifier = Modifier.fillMaxWidth()) {
+                    Text("进入播放器")
                 }
                 OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
                     Text("断开连接")
