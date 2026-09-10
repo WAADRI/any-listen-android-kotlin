@@ -15,7 +15,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -190,7 +192,7 @@ class RpcSocket(
         val result = call(OUT_LIST_GET_MUSICS.split("."), listOf(JsonPrimitive(listId)))
             ?: return emptyList()
         return M2cCodec.json.decodeFromJsonElement(
-            kotlinx.serialization.builtins.ListSerializer(ListMusicEntry.serializer()),
+            ListSerializer(ListMusicEntry.serializer()),
             result,
         )
     }
