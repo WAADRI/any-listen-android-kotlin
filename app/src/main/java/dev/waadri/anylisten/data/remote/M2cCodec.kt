@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
@@ -197,4 +198,30 @@ object M2cCodec {
     }
 
     private fun JsonPrimitive.longOrNull(): Long? = runCatching { long }.getOrNull()
+
+    // ---------------------------------------------------------------- positional payloads
+
+    /**
+     * Some server payloads are positional arrays whose element types differ per index — most
+     * notably `status: ["playing", true]`. Reading them through these helpers keeps the
+     * "numbers may arrive as int or double" problem in one place instead of scattered
+     * `asDouble`/`asInt` casts that would throw at runtime.
+     */
+    fun numericAt(array: JsonArray?, index: Int): Double? {
+        val primitive = array?.getOrNull(index) as? JsonPrimitive ?: return null
+        return primitive.content.toDoubleOrNull()
+    }
+
+    fun stringAt(array: JsonArray?, index: Int): String? {
+        val primitive = array?.getOrNull(index) as? JsonPrimitive ?: return null
+        return primitive.contentOrNull
+    }
+
+    fun booleanAt(array: JsonArray?, index: Int): Boolean? {
+        val primitive = array?.getOrNull(index) as? JsonPrimitive ?: return null
+        return primitive.content.toBooleanStrictOrNull() ?: primitive.longOrNull()?.let { it != 0L }
+    }
+
+    fun asArray(element: kotlinx.serialization.json.JsonElement?): JsonArray? =
+        element as? JsonArray
 }
