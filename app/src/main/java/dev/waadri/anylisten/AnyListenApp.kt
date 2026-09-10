@@ -21,7 +21,11 @@ class AppContainer(application: Application) {
 
     val configStore: ConfigStore = ConfigStore(application)
 
-    val playback: PlaybackRepository = PlaybackRepository(application, scope)
+    /**
+     * The player takes the config store directly: playback preferences (volume, mode, resume
+     * point) are this device's own and are persisted locally rather than on the server.
+     */
+    val playback: PlaybackRepository = PlaybackRepository(application, scope, configStore)
 
     val clientSession: ClientSession = ClientSession(
         scope = scope,

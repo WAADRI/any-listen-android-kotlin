@@ -1,14 +1,14 @@
 package dev.waadri.anylisten.playback
 
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.app.PendingIntent
 import androidx.media3.common.Player
 import androidx.media3.session.MediaSession
 import dev.waadri.anylisten.MainActivity
-import dev.waadri.anylisten.data.remote.AppSettings
+import dev.waadri.anylisten.data.config.ConfigStore
+import dev.waadri.anylisten.data.config.PlaybackPreferences
 import dev.waadri.anylisten.data.remote.Library
-import dev.waadri.anylisten.data.remote.M2cCodec
 import dev.waadri.anylisten.data.remote.PlayMethod
 import dev.waadri.anylisten.data.remote.RpcSocket
 import dev.waadri.anylisten.data.remote.Wire
@@ -25,9 +25,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /** Everything the player UI renders. */
@@ -41,6 +38,8 @@ data class PlaybackUiState(
     val queueSize: Int = 0,
     val queueIndex: Int = 0,
     val errorMessage: String? = null,
+    /** Name of the library list the queue came from, for the "playing from" line. */
+    val sourceListName: String = "",
 ) {
     val positionSeconds: Double get() = positionMs / 1000.0
     val durationSeconds: Double get() = durationMs / 1000.0
@@ -49,25 +48,39 @@ data class PlaybackUiState(
 }
 
 /**
- * Owns playback: the play queue mirror, the ExoPlayer-backed [AudioEngine], and the RPC
- * conversation with the server.
+ * The player. Owns the queue, the playhead, the volume and the playback mode — all of it local.
  *
- * Division of responsibility, learned from the web client:
- *  - The SERVER holds the session's play list, current index and settings. It is the only
- *    source for "what was playing last", which is what makes progress survive restarts and
- *    stay consistent across devices.
- *  - THIS CLIENT decides what plays next, because skip order (listLoop/random/singleLoop/...)
- *    is evaluated client-side by any-listen and only the *mode* is stored on the server.
- *  - Audio always plays here; the server never streams to us.
+ * ## Where this differs from the web client, on purpose
  *
- * Server command flow: an action is dispatched locally for immediate response and reported
- * upstream with `player.playerAction`. The server echoes that action back to every ready
- * client (including this one), where it is applied again. Actions are idempotent, so the echo
- * is harmless and guarantees convergence if another device drives playback.
+ * any-listen's web build treats the server as the session's source of truth: the queue, the
+ * current index and the play mode live there, and clients report progress and status back. This
+ * app does **not** do that. The server is used purely as a music provider:
+ *
+ * | server provides | this device owns |
+ * |---|---|
+ * | playlists (`list.getAllUserLists`) | the play queue |
+ * | tracks (`list.getListMusics`) | which track is current |
+ * | stream URLs (`music.getMusicUrl`) | the playhead |
+ * | artwork and lyrics | play order (listLoop/random/singleLoop/list) |
+ *
+ * Output volume is owned by the platform (system media volume), not by this app.
+ *
+ * Nothing about playback is ever sent upstream: no `progress`, no `status`, no `playListAction`,
+ * no settings writes. The play mode and the resume point persist locally in [ConfigStore].
+ *
+ * The tradeoff, stated so it is not a surprise later: there is no cross-device continuity. The
+ * phone and the desktop app play independently. That is the point — it is also why the progress
+ * bar and auto-advance work here after failing in the phone browser, where the playhead depended
+ * on the server round trip plus a WebAudio graph the mobile browser had suspended.
+ *
+ * `playerEvent` / `playerAction` are still registered (as deliberate no-ops) because the server
+ * broadcasts them to every ready client and would otherwise log an error per broadcast. Nothing
+ * in this class reacts to them.
  */
 class PlaybackRepository(
     appContext: Context,
     private val scope: CoroutineScope,
+    private val configStore: ConfigStore,
 ) {
     private val engine = AudioEngine(appContext, scope)
     private val random = Random()
@@ -88,58 +101,56 @@ class PlaybackRepository(
 
     private var queue: List<Wire.PlayMusicInfo> = emptyList()
     private var currentIndex = 0
-    private var historyList: List<Wire.HistoryItem> = emptyList()
     private var historyIndex = 0
-    private var settings = AppSettings()
+    private var sourceListId: String? = null
+    private var sourceListName: String = ""
 
-    /** Set while we are waiting for a resolved URL so a late arrival does not clobber state. */
-    private var resolvingItemId: String? = null
+    /** Local playback preferences, mirrored from [ConfigStore]. */
+    private var prefs = PlaybackPreferences()
 
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
 
-    // Mirrors owned here (not read from the engine) so they survive independently of the
-    // player's readiness, matching the web client's `playerState.playing` semantics.
     private var userWantsPlaying = false
     private var progressReportJob: Job? = null
+    private var resumeJob: Job? = null
 
+    /** Set while a resolved URL is in flight so a late arrival cannot clobber a newer request. */
+    private var resolvingItemId: String? = null
+
+    init {
+        // Preferences are the single source of truth for the play mode, so they are loaded once
+        // and then only ever written through the setters below.
+        scope.launch {
+            prefs = configStore.currentPlayback()
+            publish()
+        }
+    }
+
+    // ------------------------------------------------------------------ transport
+
+    /**
+     * Binds (or unbinds) the RPC socket.
+     *
+     * Only the music-source calls are used now, but the socket is still needed for authentication
+     * and for `app.inited`. It is kept deliberately free of playback state.
+     */
     fun attachSocket(socket: RpcSocket?, baseUrl: String = "") {
         detachSocket()
         this.socket = socket ?: return
         this.baseUrl = baseUrl.trimEnd('/')
 
-        socket.on(RpcSocket.INCOMING_PLAYER_EVENT) { args ->
-            val element = args.firstOrNull()?.value
-            if (element != null && element !is JsonNull) {
-                scope.launch { handlePlayerEvent(element) }
-            }
-            null
-        }
-        socket.on(RpcSocket.INCOMING_PLAYER_ACTION) { args ->
-            val element = args.firstOrNull()?.value
-            if (element != null && element !is JsonNull) {
-                val action = playerActionOf(element)
-                if (action != null) {
-                    scope.launch {
-                        // Server-originated actions are already known to the server, so nothing
-                        // is reported back. Echoing them would double every remote command.
-                        dispatch(action.action, action.data)
-                    }
-                }
-            }
-            null
-        }
-        socket.on(RpcSocket.INCOMING_PLAY_LIST_ACTION) { args ->
-            val element = args.firstOrNull()?.value
-            if (element != null && element !is JsonNull) {
-                scope.launch { handlePlayListAction(element) }
-            }
-            null
-        }
+        // Inert handlers. The server broadcasts playback messages to every ready client; leaving
+        // these unregistered would make it log an error for each one. This client ignores them
+        // because playback is local.
+        socket.on(RpcSocket.INCOMING_PLAYER_EVENT) { null }
+        socket.on(RpcSocket.INCOMING_PLAYER_ACTION) { null }
+        socket.on(RpcSocket.INCOMING_PLAY_LIST_ACTION) { null }
+        socket.on(RpcSocket.INCOMING_SETTING_CHANGED) { null }
 
         wireJobs += scope.launch { observeEngine() }
-        wireJobs += scope.launch { syncFromServer() }
-        startProgressReporting()
+        wireJobs += scope.launch { maybeResume() }
+        startPositionTracking()
     }
 
     private fun detachSocket() {
@@ -147,49 +158,164 @@ class PlaybackRepository(
         wireJobs.clear()
         progressReportJob?.cancel()
         progressReportJob = null
+        resumeJob?.cancel()
+        resumeJob = null
         socket = null
     }
 
-    // ------------------------------------------------------------------ server sync
+    // ------------------------------------------------------------------ music source
 
-    /** Pulls the session state the server already holds: queue, current track, settings. */
-    private suspend fun syncFromServer() {
-        val socket = socket ?: return
-        runCatching {
-            val playInfo = socket.getPlayInfo()
-            queue = playInfo.list
-            currentIndex = playInfo.info.index.coerceIn(0, (playInfo.list.size - 1).coerceAtLeast(0))
-            historyList = playInfo.historyList
-            historyIndex = playInfo.info.historyIndex
-            publish()
+    suspend fun loadLists(): Result<List<Library.ListSummary>> = runCatching {
+        val socket = socket ?: throw IllegalStateException("尚未连接服务端")
+        Library.summaries(socket.getAllUserLists())
+    }
 
-            // Settings carry the play method, which decides skip behaviour from here on.
-            val rawSettings = socket.call(listOf("app", "getSetting"))
-            settings = AppSettings.fromJson(rawSettings)
-            publish()
-
-            val current = queue.getOrNull(currentIndex)
-            if (current != null) {
-                loadAndPlay(current, startPositionMs = (playInfo.info.time * 1000).toLong(), autoPlay = false)
-            }
-        }.onFailure { error ->
-            _state.value = _state.value.copy(errorMessage = error.message ?: "同步播放状态失败")
+    /**
+     * Loads a list's tracks into a queue WITHOUT starting playback.
+     *
+     * `itemId` is `listId::trackId` because a song can legitimately appear in several lists and
+     * would otherwise collide.
+     */
+    suspend fun loadListMusics(listId: String): Result<List<Wire.PlayMusicInfo>> = runCatching {
+        val socket = socket ?: throw IllegalStateException("尚未连接服务端")
+        socket.getListMusics(listId).map { entry ->
+            Wire.PlayMusicInfo(
+                itemId = "$listId::${entry.id}",
+                musicInfo = entry.toMusicInfo(),
+                listId = listId,
+                source = SOURCE_SONG_LIST,
+                playLater = false,
+                played = false,
+            )
         }
     }
 
     private suspend fun resolveUrl(musicInfo: Wire.MusicInfo): String? {
         val socket = socket ?: return null
-        return runCatching { socket.getMusicUrl(musicInfo, settings.playQuality).url }
+        return runCatching { socket.getMusicUrl(musicInfo, prefs.playQuality).url }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
     }
 
     /**
-     * Resolves and starts a track.
-     *
-     * `player.playerAction` is deliberately not sent here: starting a track is a consequence of
-     * server state, not a new command, so echoing it back would be noise.
+     * The server hands out source URLs; a same-server path (e.g. the proxy used for cached or
+     * locally stored files) must be made absolute before ExoPlayer sees it.
      */
+    private fun absoluteUrl(url: String): String {
+        if (url.startsWith("http://") || url.startsWith("https://")) return url
+        if (baseUrl.isEmpty()) return url
+        return if (url.startsWith("/")) "$baseUrl$url" else "$baseUrl/$url"
+    }
+
+    // ------------------------------------------------------------------ playback control
+
+    /**
+     * Replaces the queue with [list] and starts at [index]. The queue is local; the server is not
+     * told about it.
+     */
+    suspend fun playFromList(
+        listId: String,
+        listName: String,
+        list: List<Wire.PlayMusicInfo>,
+        index: Int,
+    ) {
+        val track = list.getOrNull(index) ?: return
+        queue = list
+        currentIndex = index
+        historyIndex = 0
+        sourceListId = listId
+        sourceListName = listName
+        userWantsPlaying = true
+        publish()
+
+        configStore.saveResumePoint(listId, index, 0L)
+        loadAndPlay(track, autoPlay = true)
+    }
+
+    fun play() {
+        if (!engine.hasSource()) {
+            queue.getOrNull(currentIndex)?.let { track ->
+                scope.launch { loadAndPlay(track, autoPlay = true) }
+            }
+            return
+        }
+        userWantsPlaying = true
+        engine.play()
+        publish()
+    }
+
+    fun pause() {
+        userWantsPlaying = false
+        engine.pause()
+        persistResumePoint()
+        publish()
+    }
+
+    fun togglePlay() {
+        if (userWantsPlaying) pause() else play()
+    }
+
+    fun next() {
+        advance(PlayOrderResolver.next(snapshot(), random), forward = true)
+    }
+
+    fun previous() {
+        advance(PlayOrderResolver.prev(snapshot()), forward = false)
+    }
+
+    fun seekTo(positionMs: Long) {
+        engine.seekTo(positionMs)
+        persistResumePoint()
+        publish()
+    }
+
+    fun stop() {
+        userWantsPlaying = false
+        engine.stop()
+        publish()
+    }
+
+    /** Jumps to a specific track in the current queue. */
+    fun skipToIndex(index: Int) {
+        val track = queue.getOrNull(index) ?: return
+        currentIndex = index
+        userWantsPlaying = true
+        scope.launch { loadAndPlay(track, autoPlay = true) }
+    }
+
+    // ------------------------------------------------------------------ local settings
+
+    /**
+     * Advances the play mode. Purely local: nothing is written to the server.
+     *
+     * Volume is deliberately absent from this class. Output level is owned by the platform — the
+     * hardware volume keys and the system volume panel drive the media stream directly, which is
+     * what users expect from a music player. An in-app slider would multiply with that, so the
+     * same gesture would appear to do nothing once either end reached zero.
+     */
+    fun cyclePlayMethod() {
+        setPlayMethod(prefs.playMethod.next())
+    }
+
+    fun setPlayMethod(method: PlayMethod) {
+        if (method == prefs.playMethod) return
+        prefs = prefs.copy(playMethod = method)
+        scope.launch { configStore.savePlayMethod(method) }
+        publish()
+    }
+
+    fun setResumeOnLaunch(enabled: Boolean) {
+        prefs = prefs.copy(resumeOnLaunch = enabled)
+        scope.launch { configStore.saveResumeOnLaunch(enabled) }
+        publish()
+    }
+
+    fun clearError() {
+        _state.value = _state.value.copy(errorMessage = null)
+    }
+
+    // ------------------------------------------------------------------ internals
+
     private suspend fun loadAndPlay(music: Wire.PlayMusicInfo, startPositionMs: Long = 0L, autoPlay: Boolean = true) {
         resolvingItemId = music.itemId
         val url = resolveUrl(music.musicInfo)
@@ -213,14 +339,138 @@ class PlaybackRepository(
         publish()
     }
 
+    private fun advance(decision: PlayOrderDecision, forward: Boolean) {
+        when (decision) {
+            is PlayOrderDecision.Play -> {
+                val index = queue.indexOfFirst { it.itemId == decision.music.itemId }
+                if (index >= 0) currentIndex = index
+                if (forward) historyIndex++ else historyIndex = (historyIndex - 1).coerceAtLeast(0)
+                userWantsPlaying = true
+                scope.launch { loadAndPlay(decision.music, autoPlay = true) }
+            }
+
+            PlayOrderDecision.Stop -> {
+                userWantsPlaying = false
+                engine.stop()
+                publish()
+            }
+        }
+    }
+
+    private fun snapshot() = PlayQueueSnapshot(
+        list = queue,
+        currentIndex = currentIndex,
+        method = prefs.playMethod,
+        historyIndex = historyIndex,
+    )
+
+    /**
+     * Watches the engine for end-of-track and errors and mirrors them into UI state.
+     *
+     * Track end is where auto-advance happens — the behaviour the phone browser could not deliver,
+     * because its `ended` event depended on a WebAudio graph the mobile browser had suspended.
+     */
+    private suspend fun observeEngine() {
+        var handledEndMarker = 0L
+        while (currentCoroutineContext().isActive) {
+            val marker = engine.ended.value
+            if (marker != 0L && marker != handledEndMarker) {
+                handledEndMarker = marker
+                onTrackEnded()
+            }
+            engine.errors.value?.let { error ->
+                if (_state.value.errorMessage != error.message) {
+                    _state.value = _state.value.copy(errorMessage = error.message)
+                }
+            }
+            publish()
+            delay(300)
+        }
+    }
+
+    private suspend fun onTrackEnded() {
+        when (val decision = PlayOrderResolver.next(snapshot(), random)) {
+            is PlayOrderDecision.Play -> {
+                val index = queue.indexOfFirst { it.itemId == decision.music.itemId }
+                if (index >= 0) currentIndex = index
+                historyIndex++
+                loadAndPlay(decision.music, autoPlay = true)
+            }
+
+            PlayOrderDecision.Stop -> {
+                userWantsPlaying = false
+                engine.stop()
+                publish()
+            }
+        }
+    }
+
+    /**
+     * Persists the playhead periodically so a relaunch can resume.
+     *
+     * This is a LOCAL write, once every few seconds — not the once-per-second upload the web client
+     * performs. Writing on every position tick would hammer the disk for no benefit.
+     */
+    private fun startPositionTracking() {
+        progressReportJob?.cancel()
+        progressReportJob = scope.launch {
+            while (currentCoroutineContext().isActive) {
+                delay(RESUME_SAVE_INTERVAL_MS)
+                if (userWantsPlaying) persistResumePoint()
+            }
+        }
+    }
+
+    private suspend fun persistResumePoint() {
+        configStore.saveResumePoint(sourceListId, currentIndex, engine.currentPositionMs())
+    }
+
+    /**
+     * Restores the last queue on launch when the user has asked for it.
+     *
+     * It reloads the same library list and returns to the recorded track and position. It does NOT
+     * start playing: an app that begins making noise on launch is obnoxious, and the phone may well
+     * be in a pocket.
+     */
+    private suspend fun maybeResume() {
+        val saved = configStore.currentPlayback()
+        prefs = saved
+        if (!saved.resumeOnLaunch) {
+            publish()
+            return
+        }
+        val listId = saved.lastListId ?: run {
+            publish()
+            return
+        }
+
+        val restored = loadListMusics(listId).getOrNull() ?: run {
+            publish()
+            return
+        }
+        if (restored.isEmpty()) {
+            publish()
+            return
+        }
+
+        queue = restored
+        currentIndex = saved.lastTrackIndex.coerceIn(0, restored.size - 1)
+        sourceListId = listId
+        historyIndex = 0
+        userWantsPlaying = false
+        publish()
+
+        val track = restored[currentIndex]
+        loadAndPlay(track, startPositionMs = saved.lastPositionMs, autoPlay = false)
+    }
+
     // ------------------------------------------------------------------ background playback
 
     /**
      * Builds the [MediaSession] that the foreground service publishes to the system.
      *
-     * It wraps the same ExoPlayer instance the UI drives, so lock-screen and notification
-     * controls go through one audio pipeline rather than a parallel one. Built lazily because a
-     * session needs a player to point at.
+     * It wraps the same ExoPlayer instance the UI drives, so lock-screen and notification controls
+     * go through one audio pipeline rather than a parallel one.
      */
     private fun ensureMediaSession() {
         if (mediaSession != null) return
@@ -243,9 +493,9 @@ class PlaybackRepository(
                     MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                         .setAvailablePlayerCommands(
                             MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
-                                // The queue is owned by the server. Letting the platform add or
-                                // replace items would build a local queue the server knows
-                                // nothing about, and the two would disagree on the next skip.
+                                // The queue is ours and is replaced only by the browse screen, so
+                                // a platform controller must not add or replace items behind our
+                                // back — that would desynchronise `currentIndex` from the audio.
                                 .remove(Player.COMMAND_SET_MEDIA_ITEM)
                                 .remove(Player.COMMAND_CHANGE_MEDIA_ITEMS)
                                 .build(),
@@ -255,7 +505,6 @@ class PlaybackRepository(
             .build()
     }
 
-    /** Brings up the foreground service so playback survives the UI going away. */
     private fun startPlaybackService() {
         runCatching { context.startForegroundService(Intent(context, PlaybackService::class.java)) }
             .onFailure { /* foreground-start restrictions; playback still works in-process */ }
@@ -268,411 +517,23 @@ class PlaybackRepository(
         publish()
     }
 
-    /**
-     * The server hands out source URLs; a same-server path (e.g. the `/api/p_static/...` proxy
-     * used for cached or locally stored files) must be made absolute before ExoPlayer sees it.
-     */
-    private fun absoluteUrl(url: String): String {
-        if (url.startsWith("http://") || url.startsWith("https://")) return url
-        if (baseUrl.isEmpty()) return url
-        return if (url.startsWith("/")) "$baseUrl$url" else "$baseUrl/$url"
-    }
-
-    // ------------------------------------------------------------------ server -> client
-
-    private suspend fun handlePlayerEvent(element: JsonElement) {
-        val event = runCatching {
-            M2cCodec.json.decodeFromJsonElement(Wire.PlayerEvent.serializer(), element)
-        }.getOrNull() ?: return
-
-        when (event.action) {
-            "progress" -> applyRemoteProgress(event.data)
-            "status" -> applyRemoteStatus(event.data)
-            "musicChanged" -> applyMusicChanged(event.data)
-            "playInfoUpdated" -> applyPlayInfoUpdated(event.data)
-            else -> Unit // picUpdated/lyricUpdated/statusText arrive in later phases
-        }
-    }
-
-    /**
-     * The server's progress is the session's truth, and only the client that OWNS playback
-     * reports it. Applying our own echo would fight the player, so it is ignored on this side:
-     * our positions are published outward, never read back.
-     */
-    private fun applyRemoteProgress(data: JsonElement?) {
-        // No-op by design. Kept explicit so the asymmetry is documented rather than accidental.
-        if (data == null) return
-    }
-    private fun applyRemoteStatus(data: JsonElement?) {
-        val array = M2cCodec.asArray(data) ?: return
-        val playing = M2cCodec.booleanAt(array, Wire.StatusEventData.INDEX_PLAYING) ?: return
-        userWantsPlaying = playing
-        if (playing) engine.play() else engine.pause()
-        publish()
-    }
-
-    private suspend fun applyMusicChanged(data: JsonElement?) {
-        if (data == null) return
-        val changed = runCatching {
-            M2cCodec.json.decodeFromJsonElement(Wire.MusicChangedData.serializer(), data)
-        }.getOrNull() ?: return
-
-        // A `skip` command has already started the right track locally; reloading it would
-        // restart the song from zero.
-        val target = queue.getOrNull(changed.index)
-        if (target != null && target.itemId == _state.value.track?.itemId) return
-
-        currentIndex = changed.index.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
-        if (changed.historyIndex >= 0) historyIndex = changed.historyIndex
-        val music = queue.getOrNull(currentIndex) ?: return
-        loadAndPlay(music, autoPlay = userWantsPlaying)
-    }
-
-    /**
-     * An explicit "start playing" from another device carries the whole session state, so a full
-     * resync is both the simplest and the most correct response — it picks up the queue, the
-     * index and the position together.
-     */
-    private suspend fun applyPlayInfoUpdated(data: JsonElement?) {
-        if (data == null) return
-        syncFromServer()
-    }
-
-    // ------------------------------------------------------------------ play list changes
-
-    /**
-     * Queue changes broadcast by the server.
-     *
-     * Note the asymmetry with `musicChanged`: the server does NOT mutate its stored queue for a
-     * track change — that message is pure notification — so a client that only ever reloaded its
-     * queue from the server would never actually follow a skip. Keeping the queue in step here is
-     * the client's job.
-     *
-     * Only `set` and `remove` are handled; they are what playback correctness depends on.
-     * Reordering, played/unplayed marking and position updates are cosmetic and a resync on the
-     * next explicit command covers them.
-     */
-    private suspend fun handlePlayListAction(element: JsonElement) {
-        val action = element as? JsonObject ?: return
-        val name = M2cCodec.stringAt(action, "action") ?: return
-
-        when (name) {
-            "set" -> {
-                val data = action["data"] ?: return
-                val set = runCatching {
-                    M2cCodec.json.decodeFromJsonElement(Wire.PlayListSetAction.serializer(), data)
-                }.getOrNull() ?: return
-                val currentId = _state.value.track?.itemId
-                queue = set.list
-                currentIndex = queue.indexOfFirst { it.itemId == currentId }.takeIf { it >= 0 } ?: 0
-                historyList = emptyList()
-                historyIndex = 0
-                publish()
-            }
-
-            "remove" -> {
-                val ids = M2cCodec.asArray(action["data"])
-                    ?.mapNotNull { (it as? JsonPrimitive)?.content }
-                    .orEmpty()
-                if (ids.isEmpty()) return
-                val currentId = _state.value.track?.itemId
-                queue = queue.filterNot { ids.contains(it.itemId) }
-                currentIndex = queue.indexOfFirst { it.itemId == currentId }.takeIf { it >= 0 } ?: 0
-                publish()
-            }
-
-            else -> Unit
-        }
-    }
-
-    /**
-     * An action echoed by the server (originally from this client or another device). It runs
-     * through the same dispatch table as local input, which is what keeps multi-device playback
-     * identical.
-     */
-    private fun playerActionOf(element: JsonElement): Wire.PlayerAction? = runCatching {
-        M2cCodec.json.decodeFromJsonElement(Wire.PlayerAction.serializer(), element)
-    }.getOrNull()
-
-    // ------------------------------------------------------------------ client -> server
-
-    /** Local UI entry point: apply immediately, then report upstream. */
-    fun perform(action: String, data: JsonElement? = null) {
-        scope.launch {
-            val reported = dispatch(action, data)
-            if (reported != null) reportAction(reported.first, reported.second)
-        }
-    }
-
-    private suspend fun reportAction(action: String, data: JsonElement?) {
-        runCatching { socket?.playerAction(action, data) }
-    }
-
-    /**
-     * Applies an action and returns the action that should be reported upstream, or null when
-     * nothing should be reported.
-     *
-     * The return value exists because "toggle" must NOT be forwarded verbatim. The server
-     * resolves `toggle` against its OWN `playing` flag, and its flag is only updated by the
-     * status we report — so forwarding `toggle` before reporting the resulting state makes the
-     * server advance the queue a second time. Reporting the concrete `play`/`pause` we actually
-     * performed is what keeps local and server state identical, and it is what the web client
-     * does too.
-     */
-    private suspend fun dispatch(action: String, data: JsonElement?): Pair<String, JsonElement?>? {
-        var reported = action to data
-        when (action) {
-            "play" -> {
-                userWantsPlaying = true
-                if (!engine.hasSource()) currentTrack()?.let { loadAndPlay(it, autoPlay = true) } else engine.play()
-            }
-
-            "pause" -> {
-                userWantsPlaying = false
-                engine.pause()
-            }
-
-            "toggle" -> {
-                if (userWantsPlaying) {
-                    userWantsPlaying = false
-                    engine.pause()
-                    reported = "pause" to null
-                } else {
-                    userWantsPlaying = true
-                    if (!engine.hasSource()) {
-                        currentTrack()?.let { loadAndPlay(it, autoPlay = true) }
-                    } else {
-                        engine.play()
-                    }
-                    reported = "play" to null
-                }
-            }
-
-            "stop" -> {
-                userWantsPlaying = false
-                engine.stop()
-            }
-
-            "seek" -> {
-                val seconds = (data as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return null
-                engine.seekTo((seconds * 1000).toLong())
-            }
-
-            "volume" -> {
-                val v = (data as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return null
-                engine.setVolume(v.toFloat())
-            }
-
-            "volumeMute" -> {
-                val muted = (data as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: return null
-                engine.setMuted(muted)
-            }
-
-            "playbackRate" -> {
-                val rate = (data as? JsonPrimitive)?.content?.toDoubleOrNull() ?: return null
-                engine.setPlaybackRate(rate.toFloat())
-            }
-
-            "next" -> advance(PlayOrderResolver.next(snapshot(), random), forward = true)
-            "prev" -> advance(PlayOrderResolver.prev(snapshot()), forward = false)
-
-            "skip" -> {
-                val itemId = (data as? JsonPrimitive)?.content ?: return null
-                val index = queue.indexOfFirst { it.itemId == itemId }
-                if (index >= 0) {
-                    currentIndex = index
-                    loadAndPlay(queue[index], autoPlay = userWantsPlaying)
-                }
-            }
-
-            // Handled by other modules (dislike refreshes the list); accepted so the dispatch
-            // table stays total against the server's action vocabulary.
-            "collectStatus", "lyricOffset", "dislike" -> Unit
-
-            else -> return null
-        }
-        publish()
-        return reported
-    }
-
-    /**
-     * Applies a decision produced by [PlayOrderResolver]. [forward] only affects how the history
-     * cursor moves, which random mode reads back on the next skip.
-     */
-    private suspend fun advance(decision: PlayOrderDecision, forward: Boolean) {
-        when (decision) {
-            is PlayOrderDecision.Play -> {
-                currentIndex = queue.indexOfFirst { it.itemId == decision.music.itemId }
-                    .takeIf { it >= 0 } ?: currentIndex
-                if (forward) historyIndex++ else historyIndex = (historyIndex - 1).coerceAtLeast(0)
-                loadAndPlay(decision.music, autoPlay = true)
-            }
-
-            PlayOrderDecision.Stop -> {
-                userWantsPlaying = false
-                engine.stop()
-                // Tell the server playback finished so other devices stop showing "playing".
-                reportAction("stop", null)
-                publish()
-            }
-        }
-    }
-
-    private fun snapshot() = PlayQueueSnapshot(
-        list = queue,
-        currentIndex = currentIndex,
-        method = settings.playMethod,
-        historyList = historyList,
-        historyIndex = historyIndex,
-    )
-
-    private fun currentTrack(): Wire.PlayMusicInfo? = queue.getOrNull(currentIndex)
-
-    // ------------------------------------------------------------------ library browse
-
-    /**
-     * Loads the list of playlists. Kept in the repository rather than a separate one because a
-     * tap on a song has to replace the play queue, which only this class may do.
-     */
-    suspend fun loadLists(): Result<List<Library.ListSummary>> = runCatching {
-        val socket = socket ?: throw IllegalStateException("尚未连接服务端")
-        Library.summaries(socket.getAllUserLists())
-    }
-
-    suspend fun loadListMusics(listId: String): Result<List<Wire.PlayMusicInfo>> = runCatching {
-        val socket = socket ?: throw IllegalStateException("尚未连接服务端")
-        socket.getListMusics(listId).map { entry ->
-            Wire.PlayMusicInfo(
-                // The queue's identity is `listId` + track id. Using the bare track id would
-                // collide for a song present in two lists, which any-listen explicitly supports.
-                itemId = "$listId::${entry.id}",
-                musicInfo = entry.toMusicInfo(),
-                listId = listId,
-                source = SOURCE_SONG_LIST,
-                playLater = false,
-                played = false,
-            )
-        }
-    }
-
-    /**
-     * Starts a list at [index]: replaces the session queue on the server, then plays locally.
-     *
-     * Order matters. The server's broadcast of the new queue is what other devices react to, and
-     * playing before the queue exists locally would leave the very next `next` command computing
-     * its successor from the old list.
-     */
-    suspend fun playFromList(listId: String, list: List<Wire.PlayMusicInfo>, index: Int) {
-        val track = list.getOrNull(index) ?: return
-        val socket = socket ?: return
-
-        runCatching { socket.setPlayList(listId, list, SOURCE_SONG_LIST) }
-
-        queue = list
-        currentIndex = index
-        historyList = emptyList()
-        historyIndex = 0
-        userWantsPlaying = true
-        publish()
-
-        loadAndPlay(track, autoPlay = true)
-    }
-
-    /** User-initiated stop used by the browse screen's "clear" affordance. */
-    fun stopPlayback() {
-        scope.launch {
-            dispatch("stop", null)
-            reportAction("stop", null)
-        }
-    }
-    // ------------------------------------------------------------------ auto advance
-
-    private suspend fun observeEngine() {
-        var handledEndMarker = 0L
-        while (currentCoroutineContext().isActive) {
-            val marker = engine.ended.value
-            if (marker != 0L && marker != handledEndMarker) {
-                handledEndMarker = marker
-                onTrackEnded()
-            }
-            val error = engine.errors.value
-            if (error != null) {
-                _state.value = _state.value.copy(errorMessage = error.message)
-            }
-            publish()
-            delay(300)
-        }
-    }
-
-    /**
-     * The behaviour the phone browser could not deliver: when a track finishes, advance.
-     * `singleLoop` is handled inside the resolver, so no special case is needed here.
-     */
-    private suspend fun onTrackEnded() {
-        val decision = PlayOrderResolver.next(snapshot(), random)
-        when (decision) {
-            is PlayOrderDecision.Play -> {
-                currentIndex = queue.indexOfFirst { it.itemId == decision.music.itemId }
-                    .takeIf { it >= 0 } ?: currentIndex
-                historyIndex++
-                historyList = historyList + Wire.HistoryItem(decision.music.itemId, System.currentTimeMillis())
-                // Report the advance so other devices follow, then play locally.
-                reportAction("skip", JsonPrimitive(decision.music.itemId))
-                loadAndPlay(decision.music, autoPlay = true)
-            }
-
-            PlayOrderDecision.Stop -> {
-                // End of the queue under the current mode. Inlined rather than delegated to
-                // `advance`, which is for user-initiated skips and would read oddly here.
-                userWantsPlaying = false
-                engine.stop()
-                reportAction("stop", null)
-                publish()
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------ progress reporting
-
-    /**
-     * Reports playback position upward on a fixed cadence, matching the web client's 1 s
-     * interval. This is what makes the phone's progress visible to the server (and therefore to
-     * any other device), and it is driven by a coroutine rather than `timeupdate` so background
-     * playback keeps reporting.
-     */
-    private fun startProgressReporting() {
-        progressReportJob?.cancel()
-        progressReportJob = scope.launch {
-            while (currentCoroutineContext().isActive) {
-                delay(PROGRESS_INTERVAL_MS)
-                if (!userWantsPlaying || !engine.hasSource()) continue
-                val position = engine.currentPositionMs() / 1000.0
-                val duration = engine.durationMs.value / 1000.0
-                val event = progressEvent(position, duration)
-                runCatching { socket?.call(listOf("player", "playerEvent"), listOf(event)) }
-            }
-        }
-    }
-
     // ------------------------------------------------------------------ state plumbing
 
     private fun publish() {
-        val engineState = _state.value
-        val track = currentTrack()
-        _state.value = engineState.copy(
-            track = track,
+        val previous = _state.value
+        _state.value = previous.copy(
+            track = queue.getOrNull(currentIndex),
             isPlaying = engine.isPlaying.value,
             isBuffering = engine.buffering.value,
             positionMs = engine.positionMs.value,
-            durationMs = engine.durationMs.value.takeIf { it > 0 } ?: engineState.durationMs,
-            playMethod = settings.playMethod,
+            // The engine reports 0 before a track is prepared; keeping the last known duration
+            // avoids the seek bar collapsing to 00:00 between tracks.
+            durationMs = engine.durationMs.value.takeIf { it > 0 } ?: previous.durationMs,
+            playMethod = prefs.playMethod,
             queueSize = queue.size,
             queueIndex = currentIndex,
+            sourceListName = sourceListName,
         )
-    }
-
-    fun clearError() {
-        _state.value = _state.value.copy(errorMessage = null)
     }
 
     fun release() {
@@ -683,49 +544,21 @@ class PlaybackRepository(
     }
 
     companion object {
-        const val PROGRESS_INTERVAL_MS = 1_000L
+        /** How often the resume point is written locally. Not a sync interval. */
+        const val RESUME_SAVE_INTERVAL_MS = 5_000L
 
         /**
          * `Player.SourceType` for a track started from a user playlist. The server uses this to
-         * decide how to resolve a stream URL, so it must match the value the web client sends
-         * when starting playback from a list.
+         * decide how to resolve a stream URL, so it must match the value the web client sends.
          */
         const val SOURCE_SONG_LIST = "songlist"
 
-        /** `mm:ss`, matching the format the server stores and re-broadcasts. */
+        /** `mm:ss`, matching the format the server uses for track durations. */
         fun formatTime(totalSeconds: Double): String {
             val seconds = totalSeconds.toLong().coerceAtLeast(0L)
             val m = seconds / 60
             val s = seconds % 60
             return "%02d:%02d".format(m, s)
-        }
-
-        /**
-         * Builds the `progress` event this client reports upward.
-         *
-         * The shape must match `AnyListen.IPCPlayer.Progress` exactly: the server stores these
-         * fields verbatim and re-broadcasts them to other devices, so a renamed key would
-         * silently break cross-device progress rather than fail loudly.
-         */
-        fun progressEvent(positionSeconds: Double, durationSeconds: Double): JsonObject {
-            val safeDuration = durationSeconds.coerceAtLeast(0.0)
-            val safePosition = positionSeconds.coerceAtLeast(0.0)
-            return JsonObject(
-                mapOf(
-                    "action" to JsonPrimitive("progress"),
-                    "data" to JsonObject(
-                        mapOf(
-                            "nowPlayTime" to JsonPrimitive(safePosition),
-                            "maxPlayTime" to JsonPrimitive(safeDuration),
-                            "progress" to JsonPrimitive(
-                                if (safeDuration > 0) safePosition / safeDuration else 0.0,
-                            ),
-                            "nowPlayTimeStr" to JsonPrimitive(formatTime(safePosition)),
-                            "maxPlayTimeStr" to JsonPrimitive(formatTime(safeDuration)),
-                        ),
-                    ),
-                ),
-            )
         }
     }
 }
