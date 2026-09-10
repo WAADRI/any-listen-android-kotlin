@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Lyrics
+import androidx.compose.material.icons.automirrored.filled.Subtitles
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -91,7 +91,7 @@ fun PlayerScreen(
             Spacer(Modifier.weight(1f))
             TextButton(onClick = onOpenLyrics) {
                 Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Lyrics,
+                    imageVector = Icons.AutoMirrored.Filled.Subtitles,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp),
                 )
