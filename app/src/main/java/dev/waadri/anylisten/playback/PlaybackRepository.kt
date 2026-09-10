@@ -12,6 +12,7 @@ import dev.waadri.anylisten.domain.PlayQueueSnapshot
 import java.util.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -368,7 +369,7 @@ class PlaybackRepository(
 
     private suspend fun observeEngine() {
         var handledEndMarker = 0L
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             val marker = engine.ended.value
             if (marker != 0L && marker != handledEndMarker) {
                 handledEndMarker = marker
@@ -415,7 +416,7 @@ class PlaybackRepository(
     private fun startProgressReporting() {
         progressReportJob?.cancel()
         progressReportJob = scope.launch {
-            while (isActive) {
+            while (currentCoroutineContext().isActive) {
                 delay(PROGRESS_INTERVAL_MS)
                 if (!userWantsPlaying || !engine.hasSource()) continue
                 val position = engine.currentPositionMs() / 1000.0

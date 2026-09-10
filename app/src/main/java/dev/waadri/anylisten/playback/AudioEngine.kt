@@ -9,6 +9,7 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -110,7 +111,7 @@ class AudioEngine(
     private fun startTicking() {
         if (tickJob?.isActive == true) return
         tickJob = scope.launch {
-            while (isActive) {
+            while (currentCoroutineContext().isActive) {
                 sample()
                 delay(TICK_MS)
             }
