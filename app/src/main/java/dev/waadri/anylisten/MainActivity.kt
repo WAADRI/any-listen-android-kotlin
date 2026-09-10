@@ -4,18 +4,15 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.waadri.anylisten.ui.connect.ConnectScreen
+import dev.waadri.anylisten.ui.connect.ConnectViewModel
 import dev.waadri.anylisten.ui.theme.AnyListenTheme
 
 class MainActivity : ComponentActivity() {
@@ -25,32 +22,23 @@ class MainActivity : ComponentActivity() {
         setContent {
             AnyListenTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Placeholder(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding),
+                    val viewModel: ConnectViewModel = viewModel()
+                    val form by viewModel.form.collectAsStateWithLifecycle()
+                    val phase by viewModel.phase.collectAsStateWithLifecycle()
+
+                    ConnectScreen(
+                        form = form,
+                        phase = phase,
+                        onUrlChange = viewModel::onUrlChanged,
+                        onPasswordChange = viewModel::onPasswordChanged,
+                        onAutoConnectChange = viewModel::onAutoConnectChanged,
+                        onTogglePasswordVisible = viewModel::togglePasswordVisible,
+                        onConnect = viewModel::connect,
+                        onDisconnect = viewModel::disconnect,
+                        modifier = Modifier.padding(innerPadding),
                     )
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun Placeholder(modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier.padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text(
-            text = stringResource(R.string.app_name),
-            style = MaterialTheme.typography.headlineMedium,
-        )
-        Text(
-            text = stringResource(R.string.placeholder_phase_hint),
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 12.dp),
-        )
     }
 }
