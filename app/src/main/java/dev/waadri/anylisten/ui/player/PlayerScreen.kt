@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Lyrics
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -70,6 +71,7 @@ fun PlayerScreen(
     onSeek: (Double) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenBrowse: () -> Unit,
+    onOpenLyrics: () -> Unit,
     onCyclePlayMethod: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -87,6 +89,15 @@ fun PlayerScreen(
                 OfflineNotice()
             }
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = onOpenLyrics) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Lyrics,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("歌词")
+            }
             TextButton(onClick = onOpenBrowse) {
                 Icon(
                     imageVector = Icons.Filled.QueueMusic,
@@ -103,7 +114,7 @@ fun PlayerScreen(
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(6.dp))
-                Text("服务器")
+                Text("设置")
             }
         }
 
