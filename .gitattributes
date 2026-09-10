@@ -1,0 +1,7 @@
+# Normalize line endings; shell scripts must stay LF or CI fails with "bad interpreter".
+* text=auto eol=lf
+*.bat text eol=crlf
+*.jar binary
+*.apk binary
+*.keystore binary
+gradle/wrapper/gradle-wrapper.jar binary

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AnyListen</string>
+    <string name="placeholder_phase_hint">Phase 0 skeleton — protocol layer lands next.</string>
+</resources>
