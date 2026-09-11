@@ -116,17 +116,34 @@ class AuthApiThreadingTest {
 
     @Test
     fun `the handshake sends the salted password digest, not the password`() {
-        // Guards the one credential rule of this protocol: `m` is sha256(password + salt) and the
+        // Guards the one credential rule of this protocol: `m` is sha256(password + salt), and the
         // password itself must never appear on the wire.
         runBlocking { withContext(Dispatchers.Main) { api.connect(baseUrl(), "super-secret") } }
 
         val idRequest = server.takeRequest()
-        assertEquals("/api/ipc/id", idRequest.path)
+        assertTrue(
+            "expected the server id probe, got ${idRequest.path}",
+            idRequest.path?.endsWith("/api/ipc/id") == true,
+        )
         val authRequest = server.takeRequest()
-        assertEquals("/api/ipc/ah", authRequest.path)
+        assertTrue(
+            "expected the auth endpoint, got ${authRequest.path}",
+            authRequest.path?.endsWith("/api/ipc/ah") == true,
+        )
+
         val salt = authRequest.getHeader("s")
         assertNotNull("the salt header is required for the server to recompute the digest", salt)
         assertEquals(AuthApi.sha256Hex("super-secret$salt"), authRequest.getHeader("m"))
         assertNotEquals("super-secret", authRequest.getHeader("m"))
+
+        // Belt and braces: the password must not leak through any other header or the URL either.
+        authRequest.headers.names().forEach { name ->
+            assertNotEquals(
+                "password leaked in header $name",
+                "super-secret",
+                authRequest.getHeader(name),
+            )
+        }
+        assertTrue("password leaked in the URL", authRequest.path?.contains("super-secret") != true)
     }
 }
