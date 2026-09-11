@@ -1,5 +1,6 @@
 package dev.waadri.anylisten.ui.player
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,6 +65,7 @@ import dev.waadri.anylisten.playback.PlaybackUiState
 fun PlayerScreen(
     state: PlaybackUiState,
     connected: Boolean,
+    lyricLine: String?,
     onTogglePlay: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
@@ -89,8 +91,10 @@ fun PlayerScreen(
             }
             Spacer(Modifier.weight(1f))
             TextButton(onClick = onOpenLyrics) {
+                // MusicNote rather than the queue glyph: this button used to share QueueMusic with
+                // the library button, which made two different destinations look identical.
                 Icon(
-                    imageVector = Icons.Filled.QueueMusic,
+                    imageVector = Icons.Filled.MusicNote,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp),
                 )
@@ -119,7 +123,7 @@ fun PlayerScreen(
 
         Spacer(Modifier.weight(0.5f))
 
-        AlbumArt(picUrl = state.track?.musicInfo?.meta?.picUrl)
+        AlbumArt(picUrl = state.artworkUrl)
 
         Spacer(Modifier.height(24.dp))
 
@@ -141,6 +145,40 @@ fun PlayerScreen(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
+
+        // Album, when the server supplied one. Hidden rather than left blank so the title block
+        // stays vertically centred for tracks without album tags.
+        val album = state.track?.musicInfo?.meta?.albumName
+        if (!album.isNullOrBlank()) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = album,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        // The current lyric line, so the words are visible without leaving the player. Tapping it
+        // opens the full scrolling view.
+        if (!lyricLine.isNullOrBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = lyricLine,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenLyrics)
+                    .padding(vertical = 4.dp),
+            )
+        }
 
         Spacer(Modifier.weight(0.5f))
 

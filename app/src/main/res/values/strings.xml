@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AnyListen</string>
+
+    <!--
+        Shown by the foreground service the instant it starts, before the first track has
+        buffered. Media3 swaps in the real media notification as soon as playback begins.
+    -->
+    <string name="playback_channel_name">播放控制</string>
+    <string name="playback_notification_title">AnyListen 正在播放</string>
 </resources>
