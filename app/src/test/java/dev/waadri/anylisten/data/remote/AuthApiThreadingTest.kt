@@ -121,6 +121,9 @@ class AuthApiThreadingTest {
         runBlocking { withContext(Dispatchers.Main) { api.connect(baseUrl(), "super-secret") } }
 
         val idRequest = server.takeRequest()
+        // Printed deliberately: `RecordedRequest.path` carries the query string, and guessing its
+        // shape twice already cost two CI round trips.
+        println("DIAG baseUrl=${baseUrl()} idRequest.path=${idRequest.path}")
         assertTrue(
             "expected the server id probe, got ${idRequest.path}",
             idRequest.path?.endsWith("/api/ipc/id") == true,
