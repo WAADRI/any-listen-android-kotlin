@@ -67,6 +67,17 @@ class LibraryTest {
     }
 
     @Test
+    fun `a relative cover url is resolved against the server`() {
+        // Real shape from the device: covers come back as a document-relative proxy path, which is
+        // why no cover rendered until it was resolved.
+        val all = Wire.MyAllList(userList = listOf(list("u1", "有封面", pic = "./api/p_static/abc.jpeg")))
+
+        val summaries = Library.summaries(all, "https://music.waadri.top")
+
+        assertEquals("https://music.waadri.top/api/p_static/abc.jpeg", summaries.single().coverUrl)
+    }
+
+    @Test
     fun `missing lists are skipped rather than producing empty rows`() {
         val all = Wire.MyAllList(loveList = list("love", "我喜欢"))
 
