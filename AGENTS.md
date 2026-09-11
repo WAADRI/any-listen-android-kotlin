@@ -164,6 +164,26 @@ any-listen-android/
 
     Kotlin 把 `$API_PREFIX` 当成变量，而**前面缺 `$` 的 `IPC_PATH` 变成纯文本**，请求打到不存在的路由上，服务端 404。已有教训：这个 bug 从协议层第一个提交起就在 `main` 上，**96 个单测全绿**，而客户端连不上任何服务器——因为测试断言了 `buildSocketUrl`（那里写对了，用的是 `${AuthApi.API_PREFIX}${AuthApi.IPC_PATH}`），**却从没断言过 HTTP 的实际请求路径**。**凡是拼 URL 的地方，测试都要断言真实路径**，不要只断言常量本身。回归测试见 `AuthApiThreadingTest`。
 
+11. **服务端给的资源 URL 不是能直接取的 URL，必须过 `ServerUrl.resolve`。**
+    服务端有两种「看起来像 URL 但不能直接用」的返回值，**而且两种都会真实出现**：
+
+    | 服务端返回 | 例子（真机实测值） | 直接用会怎样 |
+    |---|---|---|
+    | 虚拟公共路径 | `al-ps-host:/public/medias/<sha256>.mp3` | 拼成 `https://host/al-ps-host:/public/...` → 404 |
+    | 同源相对路径 | `./api/p_static/<sha256>.jpeg` | 交给图片加载器 → `FileNotFoundException` |
+
+    关键点：虚拟标记是**被替换**成 host，**不是拼在 host 后面**。服务端 `buildRealPublicPath` 的实现就是一句 `virtualPath.replace(VIRTUAL_PROTOCOL, host)`（见 `packages/shared/common/tools.ts`，`VIRTUAL_PROTOCOL = 'al-ps-host:'`），Web 端的 `buildUrl()` 也是**先**做这一步替换、之后才考虑代理。
+
+    已有教训：陷阱 5 只写了「同源相对路径要补 baseUrl」，**没写这条替换语义**，照那半句话实现就把标记拼在了 host 后面，音频 404；随后**封面又以完全相同的方式坏掉两次**——`mediaMetadataFor` 把原始 `meta.picUrl` 交给系统媒体通知（日志里是字面的 `FileNotFoundException: ./api/p_static/....jpeg`），播放页封面同样直接用原始值。
+
+    因此规则是：**凡是来自服务端的 URL，一律先过 `ServerUrl.resolve(url, baseUrl)`**，且**只在一处解析**：
+    - 播放地址 → `PlaybackRepository.absoluteUrl`
+    - 歌单封面 → `Library.summaries`
+    - 曲目封面 → `Library.trackCovers`，结果由 `PlaybackUiState.artworkUrl` 承载
+    - 媒体通知封面 → `PlaybackService.mediaMetadataFor` 的 `artworkUrl` 形参（**它接收已解析的 URL，不接收曲目**，就是为了不给这个 bug 第三次机会）
+
+    不要指望「每个调用点都记得解析」，那正是它坏了三次的原因。回归测试见 `ServerUrlTest` 与 `LibraryTest`。
+
 改动上述任一环节时，请同步更新 `README.md` 的说明，并保证 `app/src/test/` 中有对应覆盖。
 
 ## 适用对象
