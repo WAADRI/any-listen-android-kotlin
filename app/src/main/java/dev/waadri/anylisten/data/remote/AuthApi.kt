@@ -83,7 +83,7 @@ class AuthApi(
             Diag.problem("auth.serverId.failed", "${e.javaClass.simpleName}: ${e.message}")
             return@withContext classifyNetworkError(e)
         } ?: run {
-            Diag.problem("auth.serverId.unexpected", "GET $base/api/ipc/id did not start with OjppZDo6-")
+            Diag.problem("auth.serverId.unexpected", "GET $base${API_PREFIX}${IPC_PATH}/id did not start with $ID_PREFIX")
             return@withContext AuthResult.NotAnyListen("该地址不是 any-listen 服务端（/api/ipc/id 响应格式不符）")
         }
         Diag.d("auth.serverId", serverId)
@@ -92,7 +92,7 @@ class AuthApi(
             val salt = randomSalt()
             val key = sha256Hex(password + salt)
             val request = Request.Builder()
-                .url("$base$API_PREFIX/IPC_PATH/ah")
+                .url("$base${API_PREFIX}${IPC_PATH}/ah")
                 .header("m", key)
                 .header("s", salt)
                 .post(EMPTY_BODY)
@@ -128,7 +128,7 @@ class AuthApi(
     }
 
     private fun fetchServerId(base: String): String? {
-        val request = Request.Builder().url("$base$API_PREFIX/IPC_PATH/id").get().build()
+        val request = Request.Builder().url("$base${API_PREFIX}${IPC_PATH}/id").get().build()
         callFactory.newCall(request).execute().use { response ->
             if (response.code != 200) return null
             val body = response.body?.string().orEmpty().trim()
