@@ -24,21 +24,23 @@ object Library {
      * Flattens `getAllUserLists()` into one ordered list. Built-in lists come first because they
      * are what a phone user reaches for most; their order is fixed here by the explicit read
      * order rather than by whatever order the response's object keys happen to be in.
+     *
+     * [baseUrl] is needed because the covers are not absolute URLs; see [ServerUrl].
      */
-    fun summaries(all: Wire.MyAllList?): List<ListSummary> {
+    fun summaries(all: Wire.MyAllList?, baseUrl: String = ""): List<ListSummary> {
         if (all == null) return emptyList()
         val builtIns = listOfNotNull(all.defaultList, all.loveList, all.lastPlayList)
         return (builtIns + all.userList)
-            .map(::summary)
+            .map { summary(it, baseUrl) }
             .filter { it.id.isNotEmpty() }
     }
 
-    private fun summary(entry: Wire.MyListEntry): ListSummary = ListSummary(
+    private fun summary(entry: Wire.MyListEntry, baseUrl: String): ListSummary = ListSummary(
         id = entry.id,
         name = entry.name,
         type = entry.type,
         songCount = M2cCodec.intAt(entry.meta, "songCount") ?: 0,
-        coverUrl = M2cCodec.stringAt(entry.meta, "pic")?.takeIf { it.isNotBlank() },
+        coverUrl = ServerUrl.resolve(M2cCodec.stringAt(entry.meta, "pic"), baseUrl),
     )
 }
 

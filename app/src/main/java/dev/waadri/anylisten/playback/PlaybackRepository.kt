@@ -13,6 +13,7 @@ import dev.waadri.anylisten.data.remote.Library
 import dev.waadri.anylisten.data.remote.PlayMethod
 import dev.waadri.anylisten.data.remote.RpcState
 import dev.waadri.anylisten.data.remote.RpcSocket
+import dev.waadri.anylisten.data.remote.ServerUrl
 import dev.waadri.anylisten.data.remote.Wire
 import dev.waadri.anylisten.domain.PlayOrderDecision
 import dev.waadri.anylisten.domain.PlayOrderResolver
@@ -179,7 +180,7 @@ class PlaybackRepository(
 
     suspend fun loadLists(): Result<List<Library.ListSummary>> = runCatching {
         val socket = socket ?: throw IllegalStateException("尚未连接服务端")
-        Library.summaries(socket.getAllUserLists())
+        Library.summaries(socket.getAllUserLists(), baseUrl)
     }
 
     /**
@@ -230,14 +231,11 @@ class PlaybackRepository(
     }
 
     /**
-     * The server hands out source URLs; a same-server path (e.g. the proxy used for cached or
-     * locally stored files) must be made absolute before ExoPlayer sees it.
+     * The server hands out two flavours of not-quite-absolute URL: the `al-ps-host:` virtual
+     * protocol, and same-server relative paths for proxied or locally stored files. Both must be
+     * resolved before ExoPlayer sees them; see [ServerUrl].
      */
-    private fun absoluteUrl(url: String): String {
-        if (url.startsWith("http://") || url.startsWith("https://")) return url
-        if (baseUrl.isEmpty()) return url
-        return if (url.startsWith("/")) "$baseUrl$url" else "$baseUrl/$url"
-    }
+    private fun absoluteUrl(url: String): String = ServerUrl.resolve(url, baseUrl) ?: url
 
     // ------------------------------------------------------------------ playback control
 
