@@ -46,32 +46,48 @@ data class ServerSession(
  *
  * where `m = sha256Hex(password + s)` and `s` is a random per-request salt. The password
  * itself never crosses the wire.
+ *
+ * ## Threading
+ *
+ * [connect] is `suspend` AND owns its dispatcher. OkHttp's synchronous `execute()` blocks, and this
+ * used to run directly on `Dispatchers.Main` because `viewModelScope` launches there — so the
+ * connect button failed with `NetworkOnMainThreadException` on every device and every server, while
+ * every unit test stayed green, because a JVM test has no main-thread check.
+ *
+ * Dispatching in here rather than at the call site is deliberate. An earlier version shipped a
+ * `connectOnIo()` wrapper that no caller ever used, so the safe path existed and nothing took it.
+ * A suspend function that touches the network should be safe to call from any dispatcher.
  */
 class AuthApi(
     private val client: OkHttpClient = defaultClient(),
 ) {
 
-    suspend fun connect(rawUrl: String, password: String): AuthResult {
+    suspend fun connect(rawUrl: String, password: String): AuthResult = withContext(Dispatchers.IO) {
         val base = normalizeBaseUrl(rawUrl) ?: run {
             // The most common first failure, and one the user cannot diagnose from the UI: a URL
             // that normalises to nothing never produces a request, so there is no network error.
             Diag.problem("auth.url.rejected", "input=\"${Diag.url(rawUrl)}\"")
-            return AuthResult.Unreachable("无法解析服务器地址：$rawUrl")
+            return@withContext AuthResult.Unreachable("无法解析服务器地址：$rawUrl")
         }
-        Diag.event("auth.start", "base" to Diag.url(base), "password" to Diag.secret(password))
+        Diag.event(
+            "auth.start",
+            "base" to Diag.url(base),
+            "password" to Diag.secret(password),
+            "thread" to Thread.currentThread().name,
+        )
 
         val serverId = try {
             fetchServerId(base)
         } catch (e: Exception) {
             Diag.problem("auth.serverId.failed", "${e.javaClass.simpleName}: ${e.message}")
-            return classifyNetworkError(e)
+            return@withContext classifyNetworkError(e)
         } ?: run {
             Diag.problem("auth.serverId.unexpected", "GET $base/api/ipc/id did not start with OjppZDo6-")
-            return AuthResult.NotAnyListen("该地址不是 any-listen 服务端（/api/ipc/id 响应格式不符）")
+            return@withContext AuthResult.NotAnyListen("该地址不是 any-listen 服务端（/api/ipc/id 响应格式不符）")
         }
         Diag.d("auth.serverId", serverId)
 
-        return try {
+        try {
             val salt = randomSalt()
             val key = sha256Hex(password + salt)
             val request = Request.Builder()
@@ -106,37 +122,6 @@ class AuthApi(
             }
         } catch (e: Exception) {
             Diag.problem("auth.request.failed", "${e.javaClass.simpleName}: ${e.message}")
-            classifyNetworkError(e)
-        }
-    }
-
-    /**
-     * Re-validates a stored token: the server accepts a POST to the same endpoint with only
-     * the `m` header carrying the JWT. Used to skip the password prompt on app start.
-     */
-    suspend fun validateToken(rawUrl: String, session: ServerSession): AuthResult {
-        val base = normalizeBaseUrl(rawUrl) ?: return AuthResult.Unreachable("无法解析服务器地址：$rawUrl")
-        return try {
-            val request = Request.Builder()
-                .url("$base$API_PREFIX/IPC_PATH/ah")
-                .header("m", session.token)
-                .post(EMPTY_BODY)
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                when {
-                    response.code == 403 -> AuthResult.BlockedIp
-                    response.code != 200 -> AuthResult.BadPassword
-                    !body.startsWith(HELLO_MSG) -> AuthResult.NotAnyListen("鉴权响应正文格式不符")
-                    else -> {
-                        val serverName = body.removePrefix(HELLO_MSG).trim()
-                            .let { if (it.isEmpty()) "" else runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }
-                        AuthResult.Success(session.copy(serverName = serverName.ifEmpty { session.serverName }))
-                    }
-                }
-            }
-        } catch (e: Exception) {
             classifyNetworkError(e)
         }
     }
@@ -207,7 +192,3 @@ class AuthApi(
             .build()
     }
 }
-
-/** Background-dispatcher wrapper so callers never block the UI thread by accident. */
-suspend fun AuthApi.connectOnIo(rawUrl: String, password: String): AuthResult =
-    withContext(Dispatchers.IO) { connect(rawUrl, password) }
