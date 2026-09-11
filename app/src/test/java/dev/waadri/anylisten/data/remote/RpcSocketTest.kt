@@ -61,19 +61,54 @@ class RpcSocketTest {
     }
 
     @Test
-    fun `outgoing method paths carry the group prefix`() {
-        // Outgoing calls mirror the server's exposeObj nesting.
-        assertEquals("player.getPlayInfo", RpcSocket.OUT_PLAYER_GET_PLAY_INFO)
-        assertEquals("player.playerAction", RpcSocket.OUT_PLAYER_ACTION)
-        assertEquals("music.getMusicUrl", RpcSocket.OUT_MUSIC_GET_URL)
-        assertEquals("app.inited", RpcSocket.OUT_APP_INITED)
+    fun `outgoing method paths are flat too`() {
+        // This used to assert dotted strings like "app.inited", on the theory that outgoing paths
+        // mirror exposeObj nesting. They do not: the server spreads flat factories into one
+        // object, so there is no exposeObj.app or exposeObj.list to descend into, and a
+        // two-segment path made the server answer every call with "app is not defined".
+        assertEquals(listOf("getPlayInfo"), RpcSocket.OUT_PLAYER_GET_PLAY_INFO)
+        assertEquals(listOf("playerAction"), RpcSocket.OUT_PLAYER_ACTION)
+        assertEquals(listOf("getMusicUrl"), RpcSocket.OUT_MUSIC_GET_URL)
+        assertEquals(listOf("getAllUserLists"), RpcSocket.OUT_LIST_GET_ALL_USER_LISTS)
+        assertEquals(listOf("inited"), RpcSocket.OUT_APP_INITED)
     }
 
     @Test
-    fun `incoming and outgoing player action names differ as the server expects`() {
-        // Guards the single most damaging protocol mistake: these two are NOT symmetric.
+    fun `every outgoing path is a single element`() {
+        // The server's dispatch object is flat, so more than one segment can only ever be a bug.
+        val paths = mapOf(
+            "OUT_PLAYER_GET_PLAY_INFO" to RpcSocket.OUT_PLAYER_GET_PLAY_INFO,
+            "OUT_PLAYER_ACTION" to RpcSocket.OUT_PLAYER_ACTION,
+            "OUT_PLAYER_PLAY_LIST_ACTION" to RpcSocket.OUT_PLAYER_PLAY_LIST_ACTION,
+            "OUT_LIST_GET_ALL_USER_LISTS" to RpcSocket.OUT_LIST_GET_ALL_USER_LISTS,
+            "OUT_LIST_GET_MUSICS" to RpcSocket.OUT_LIST_GET_MUSICS,
+            "OUT_MUSIC_GET_URL" to RpcSocket.OUT_MUSIC_GET_URL,
+            "OUT_MUSIC_GET_PIC" to RpcSocket.OUT_MUSIC_GET_PIC,
+            "OUT_MUSIC_GET_LYRIC" to RpcSocket.OUT_MUSIC_GET_LYRIC,
+            "OUT_APP_INITED" to RpcSocket.OUT_APP_INITED,
+            "OUT_APP_SET_SETTING" to RpcSocket.OUT_APP_SET_SETTING,
+        )
+        for ((name, path) in paths) {
+            assertEquals("$name must have exactly one segment, got $path", 1, path.size)
+            assertTrue("$name must not be blank, got $path", path.first().isNotBlank())
+        }
+    }
+
+    @Test
+    fun `the encoded request carries the flat path on the wire`() {
+        // Pins the bytes rather than the constants: the frame is built by M2cCodec and this is
+        // what the server actually parses.
+        val frame = M2cCodec.encodeRequest("1", RpcSocket.OUT_LIST_GET_ALL_USER_LISTS, emptyList())
+
+        assertEquals("""[0,"1",["getAllUserLists"],[],[]]""", frame)
+    }
+
+    @Test
+    fun `incoming and outgoing player action names are both bare`() {
+        // Guards the single most damaging protocol mistake: assuming a group prefix where the
+        // server has none. Both directions send the bare method name.
         assertEquals("playerAction", RpcSocket.INCOMING_PLAYER_ACTION)
-        assertEquals("player.playerAction", RpcSocket.OUT_PLAYER_ACTION)
+        assertEquals(listOf("playerAction"), RpcSocket.OUT_PLAYER_ACTION)
     }
 
     @Test

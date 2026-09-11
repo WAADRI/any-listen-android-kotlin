@@ -121,7 +121,9 @@ class RpcSocket(
     /**
      * Calls a server method. Suspends until the matching response arrives.
      *
-     * @param path nested path into the server's `exposeObj`, e.g. `["player","getPlayInfo"]`.
+     * @param path path into the server's `exposeObj`. This is always a single element for the
+     * methods this client uses, because the server's dispatch object is flat; see the
+     * `OUT_*` constants.
      * @throws RpcException when the server reports an error, or the call times out.
      */
     suspend fun call(
@@ -169,15 +171,14 @@ class RpcSocket(
      * reset to false when the connection is established.
      */
     suspend fun markInited() {
-        call(listOf("app", "inited"))
+        call(OUT_APP_INITED)
     }
-
     /** Convenience for the common `player.playerAction({action, data})` shape. */
     suspend fun playerAction(action: String, data: JsonElement? = null) =
-        call(OUT_PLAYER_ACTION.split("."), listOf(M2cCodec.actionPayload(action, data)))
+        call(OUT_PLAYER_ACTION, listOf(M2cCodec.actionPayload(action, data)))
 
     suspend fun getPlayInfo(): Wire.PlayInfo {
-        val result = call(OUT_PLAYER_GET_PLAY_INFO.split("."))
+        val result = call(OUT_PLAYER_GET_PLAY_INFO)
             ?: throw RpcException("getPlayInfo 返回空结果")
         return M2cCodec.json.decodeFromJsonElement(Wire.PlayInfo.serializer(), result)
     }
@@ -187,7 +188,7 @@ class RpcSocket(
             Wire.GetMusicUrlInfo.serializer(),
             Wire.GetMusicUrlInfo(musicInfo = musicInfo, quality = quality),
         )
-        val result = call(OUT_MUSIC_GET_URL.split("."), listOf(payload))
+        val result = call(OUT_MUSIC_GET_URL, listOf(payload))
             ?: throw RpcException("getMusicUrl 返回空结果")
         return M2cCodec.json.decodeFromJsonElement(Wire.MusicUrlInfo.serializer(), result)
     }
@@ -207,7 +208,7 @@ class RpcSocket(
             Wire.GetMusicPicInfo.serializer(),
             Wire.GetMusicPicInfo(musicInfo = musicInfo, isRefresh = isRefresh),
         )
-        val result = call(OUT_MUSIC_GET_LYRIC.split("."), listOf(payload)) ?: return null
+        val result = call(OUT_MUSIC_GET_LYRIC, listOf(payload)) ?: return null
         if (result is JsonNull) return null
         return runCatching {
             M2cCodec.json.decodeFromJsonElement(Wire.MusicLyricInfo.serializer(), result).info
@@ -222,21 +223,21 @@ class RpcSocket(
      * writing them upstream would reintroduce the server round trip the local design removed.
      */
     suspend fun setSetting(setting: JsonObject) {
-        call(OUT_APP_SET_SETTING.split("."), listOf(setting))
+        call(OUT_APP_SET_SETTING, listOf(setting))
     }
 
     // ------------------------------------------------------------------ music library
 
     /** `list.getAllUserLists()`: the built-in lists plus the user's own. */
     suspend fun getAllUserLists(): Wire.MyAllList {
-        val result = call(OUT_LIST_GET_ALL_USER_LISTS.split("."))
+        val result = call(OUT_LIST_GET_ALL_USER_LISTS)
             ?: return Wire.MyAllList()
         return M2cCodec.json.decodeFromJsonElement(Wire.MyAllList.serializer(), result)
     }
 
     /** `list.getListMusics(listId)`: the tracks of one list. */
     suspend fun getListMusics(listId: String): List<ListMusicEntry> {
-        val result = call(OUT_LIST_GET_MUSICS.split("."), listOf(JsonPrimitive(listId)))
+        val result = call(OUT_LIST_GET_MUSICS, listOf(JsonPrimitive(listId)))
             ?: return emptyList()
         return M2cCodec.json.decodeFromJsonElement(
             ListSerializer(ListMusicEntry.serializer()),
@@ -256,7 +257,7 @@ class RpcSocket(
             Wire.PlayListSetAction.serializer(),
             Wire.PlayListSetAction(listId = listId, list = list, source = source),
         )
-        call(OUT_PLAYER_PLAY_LIST_ACTION.split("."), listOf(M2cCodec.actionPayload("set", payload)))
+        call(OUT_PLAYER_PLAY_LIST_ACTION, listOf(M2cCodec.actionPayload("set", payload)))
     }
 
     // ------------------------------------------------------------------ internals
@@ -433,17 +434,37 @@ class RpcSocket(
         const val INCOMING_PLAY_HISTORY_LIST_ACTION = "playHistoryListAction"
         const val INCOMING_SETTING_CHANGED = "settingChanged"
 
-        /** Outgoing paths, which DO follow the server's `exposeObj` nesting. */
-        const val OUT_PLAYER_GET_PLAY_INFO = "player.getPlayInfo"
-        const val OUT_PLAYER_ACTION = "player.playerAction"
-        const val OUT_PLAYER_PLAY_LIST_ACTION = "player.playListAction"
-        const val OUT_LIST_GET_ALL_USER_LISTS = "list.getAllUserLists"
-        const val OUT_LIST_GET_MUSICS = "list.getListMusics"
-        const val OUT_MUSIC_GET_URL = "music.getMusicUrl"
-        const val OUT_MUSIC_GET_PIC = "music.getMusicPic"
-        const val OUT_MUSIC_GET_LYRIC = "music.getMusicLyric"
-        const val OUT_APP_INITED = "app.inited"
-        const val OUT_APP_SET_SETTING = "app.setSetting"
+        /**
+         * Every client -> server method travels as a ONE-ELEMENT path.
+         *
+         * The server builds its dispatch object by spreading flat factories into a single object:
+         *
+         * ```ts
+         * const exposeObj = { ...createExposeApp(), ...createExposeList(), ...createExposeMusic() }
+         * ```
+         *
+         * `createExposeList()` returns `{ getAllUserLists, getListMusics, ... }`, so there is no
+         * `exposeObj.list` to descend into. A two-segment path such as `["list","getAllUserLists"]`
+         * makes the server resolve a property off `undefined` and answer with a JavaScript
+         * `ReferenceError` — literally `list is not defined`, which is what this client used to
+         * get for every single call.
+         *
+         * The `createRemoteGroup('list', ...)` seen in the server source is a red herring: it only
+         * sets local queueing/timeout on the caller side and contributes nothing to the path.
+         *
+         * These are kept as `List<String>` rather than dotted strings so a path can never be
+         * mangled by string splitting again; see `RpcSocketTest` for the wire-format assertions.
+         */
+        val OUT_PLAYER_GET_PLAY_INFO = listOf("getPlayInfo")
+        val OUT_PLAYER_ACTION = listOf("playerAction")
+        val OUT_PLAYER_PLAY_LIST_ACTION = listOf("playListAction")
+        val OUT_LIST_GET_ALL_USER_LISTS = listOf("getAllUserLists")
+        val OUT_LIST_GET_MUSICS = listOf("getListMusics")
+        val OUT_MUSIC_GET_URL = listOf("getMusicUrl")
+        val OUT_MUSIC_GET_PIC = listOf("getMusicPic")
+        val OUT_MUSIC_GET_LYRIC = listOf("getMusicLyric")
+        val OUT_APP_INITED = listOf("inited")
+        val OUT_APP_SET_SETTING = listOf("setSetting")
 
         const val EVENT_PROTOCOL_ERROR = "protocolError"
 
