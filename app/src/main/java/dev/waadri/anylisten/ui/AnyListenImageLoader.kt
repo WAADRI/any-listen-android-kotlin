@@ -7,6 +7,7 @@ import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.asCoroutineDispatcher
 import okhttp3.OkHttpClient
 
 /**
