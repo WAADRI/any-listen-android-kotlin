@@ -7,78 +7,44 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
-import okhttp3.Call
-import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import okhttp3.Timeout
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
 /**
- * Where the blocking HTTP work actually runs.
+ * Which thread the blocking HTTP work runs on.
  *
  * This exists because a shipped build failed every connect with `NetworkOnMainThreadException`.
  * `viewModelScope` launches on `Dispatchers.Main`, `AuthApi.connect` used OkHttp's blocking
  * `execute()`, and nothing moved the work off the main thread. Every unit test passed anyway: a JVM
- * test has no main-thread check, so the only signal was a phone that could not connect to anything.
+ * test has no main-thread check, so the only signal was a phone that could not connect to any
+ * server while the same URL opened fine in a browser.
  *
- * The test therefore does two things a normal unit test does not:
+ * So the test does two things an ordinary unit test does not:
  *
- *  1. Installs a main dispatcher via [Dispatchers.setMain], so `Dispatchers.Main` resolves in a JVM
- *     test at all, and calls [AuthApi.connect] from it — the same dispatcher `viewModelScope` uses.
- *  2. Records the thread name from inside the OkHttp call factory, which runs synchronously on
- *     whatever thread invoked `execute()`. That is the thread the real network I/O would block.
+ *  1. Installs a main dispatcher with [Dispatchers.setMain], so `Dispatchers.Main` resolves at all
+ *     in a JVM test, and calls [AuthApi.connect] from it — the same dispatcher `viewModelScope`
+ *     uses.
+ *  2. Records the thread name from an [Interceptor]. Interceptors run synchronously on the thread
+ *     that invoked the call, so this is the thread the real network I/O would block.
+ *
+ * A real [MockWebServer] is used rather than a hand-written fake: OkHttp's `Builder.callFactory`
+ * is internal and `okhttp3.Timeout` is not on this module's test classpath, so implementing `Call`
+ * by hand does not compile from here.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AuthApiThreadingTest {
 
-    /** Records the thread that performs the blocking call, and answers both handshake requests. */
-    private class RecordingCallFactory : Call.Factory {
-        var observedThreadName: String? = null
-
-        override fun newCall(request: Request): Call {
-            observedThreadName = Thread.currentThread().name
-            val path = request.url.encodedPath
-            val body = when {
-                path.endsWith("/id") -> "${AuthApi.ID_PREFIX}test-server-id"
-                else -> "${AuthApi.HELLO_MSG}\nAnyListenTest"
-            }
-            return FakeCall(
-                request = request,
-                response = Response.Builder()
-                    .request(request)
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .apply { if (!path.endsWith("/id")) header("token", "test.jwt.token") }
-                    .body(body.toResponseBody("text/plain".toMediaType()))
-                    .build(),
-            )
-        }
-    }
-
-    private class FakeCall(private val request: Request, private val response: Response) : Call {
-        override fun request(): Request = request
-        override fun execute(): Response = response
-        override fun enqueue(responseCallback: okhttp3.Callback) =
-            throw UnsupportedOperationException("AuthApi uses execute()")
-
-        override fun isExecuted(): Boolean = false
-        override fun cancel() = Unit
-        override fun isCanceled(): Boolean = false
-        override fun timeout(): Timeout = Timeout.NONE
-        override fun clone(): Call = FakeCall(request, response)
-    }
-
-    private lateinit var factory: RecordingCallFactory
+    private lateinit var server: MockWebServer
+    private var observedThreadName: String? = null
     private lateinit var api: AuthApi
 
     @Before
@@ -86,11 +52,25 @@ class AuthApiThreadingTest {
         // Without this, Dispatchers.Main throws "Module with the Main dispatcher had failed to
         // initialize" in a plain JVM test, and the ViewModel path could not be reproduced at all.
         Dispatchers.setMain(Dispatchers.Unconfined)
-        factory = RecordingCallFactory()
+
+        server = MockWebServer()
+        server.enqueue(MockResponse().setBody("${AuthApi.ID_PREFIX}test-server-id"))
+        server.enqueue(
+            MockResponse()
+                .addHeader("token", "test.jwt.token")
+                .setBody("${AuthApi.HELLO_MSG}\nAnyListenTest"),
+        )
+        server.start()
+
+        val recording = Interceptor { chain ->
+            observedThreadName = Thread.currentThread().name
+            chain.proceed(chain.request())
+        }
         api = AuthApi(
             OkHttpClient.Builder()
-                .callFactory(factory)
-                .connectTimeout(1, TimeUnit.SECONDS)
+                .addInterceptor(recording)
+                .connectTimeout(2, TimeUnit.SECONDS)
+                .readTimeout(2, TimeUnit.SECONDS)
                 .build(),
         )
     }
@@ -98,32 +78,35 @@ class AuthApiThreadingTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+        server.shutdown()
     }
+
+    private fun baseUrl(): String = server.url("/").toString().trimEnd('/')
 
     @Test
     fun `connect does its blocking work off the main dispatcher`() {
         val callerThread = Thread.currentThread().name
 
         val result = runBlocking {
-            // Dispatchers.Main here is what viewModelScope would use.
-            withContextMain { api.connect("http://server.local:9500", "pw") }
+            // Dispatchers.Main is what viewModelScope would use.
+            withContext(Dispatchers.Main) { api.connect(baseUrl(), "pw") }
         }
 
         assertTrue("handshake should succeed, got $result", result is AuthResult.Success)
+        assertNotNull("the interceptor should have run", observedThreadName)
         assertNotEquals(
             "the blocking OkHttp call ran on the caller's main thread — this is exactly the " +
                 "NetworkOnMainThreadException that shipped",
             callerThread,
-            factory.observedThreadName,
+            observedThreadName,
         )
     }
 
     @Test
     fun `connect succeeds from the main dispatcher at all`() {
-        // The narrower guarantee: the call is usable from the dispatcher a ViewModel gives you.
-        // Before the fix this threw NetworkOnMainThreadException on device.
+        // The narrower guarantee: usable from the dispatcher a ViewModel is given.
         val result = runBlocking {
-            withContextMain { api.connect("http://server.local:9500", "pw") }
+            withContext(Dispatchers.Main) { api.connect(baseUrl(), "pw") }
         }
 
         val success = result as? AuthResult.Success
@@ -131,6 +114,19 @@ class AuthApiThreadingTest {
         assertEquals("test.jwt.token", success?.session?.token)
     }
 
-    private suspend fun <T> withContextMain(block: suspend () -> T): T =
-        withContext(Dispatchers.Main) { block() }
+    @Test
+    fun `the handshake sends the salted password digest, not the password`() {
+        // Guards the one credential rule of this protocol: `m` is sha256(password + salt) and the
+        // password itself must never appear on the wire.
+        runBlocking { withContext(Dispatchers.Main) { api.connect(baseUrl(), "super-secret") } }
+
+        val idRequest = server.takeRequest()
+        assertEquals("/api/ipc/id", idRequest.path)
+        val authRequest = server.takeRequest()
+        assertEquals("/api/ipc/ah", authRequest.path)
+        val salt = authRequest.getHeader("s")
+        assertNotNull("the salt header is required for the server to recompute the digest", salt)
+        assertEquals(AuthApi.sha256Hex("super-secret$salt"), authRequest.getHeader("m"))
+        assertNotEquals("super-secret", authRequest.getHeader("m"))
+    }
 }

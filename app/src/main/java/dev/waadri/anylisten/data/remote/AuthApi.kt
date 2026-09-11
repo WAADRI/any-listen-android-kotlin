@@ -5,6 +5,7 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -59,7 +60,7 @@ data class ServerSession(
  * A suspend function that touches the network should be safe to call from any dispatcher.
  */
 class AuthApi(
-    private val client: OkHttpClient = defaultClient(),
+    private val callFactory: Call.Factory = defaultClient(),
 ) {
 
     suspend fun connect(rawUrl: String, password: String): AuthResult = withContext(Dispatchers.IO) {
@@ -97,7 +98,7 @@ class AuthApi(
                 .post(EMPTY_BODY)
                 .build()
 
-            client.newCall(request).execute().use { response ->
+            callFactory.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 Diag.event("auth.response", "code" to response.code, "token" to Diag.secret(response.header("token")))
                 when {
@@ -128,7 +129,7 @@ class AuthApi(
 
     private fun fetchServerId(base: String): String? {
         val request = Request.Builder().url("$base$API_PREFIX/IPC_PATH/id").get().build()
-        client.newCall(request).execute().use { response ->
+        callFactory.newCall(request).execute().use { response ->
             if (response.code != 200) return null
             val body = response.body?.string().orEmpty().trim()
             if (!body.startsWith(ID_PREFIX)) return null
