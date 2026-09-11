@@ -42,6 +42,21 @@ object Library {
         songCount = M2cCodec.intAt(entry.meta, "songCount") ?: 0,
         coverUrl = ServerUrl.resolve(M2cCodec.stringAt(entry.meta, "pic"), baseUrl),
     )
+
+    /**
+     * Cover art per track item id, resolved against the server.
+     *
+     * Returns a map rather than rewriting the tracks themselves: `Wire.PlayMusicInfo` mirrors what
+     * the server sent, and overwriting `meta.picUrl` with a rewritten URL would make the protocol
+     * model lie about its own payload.
+     *
+     * Only URLs are rewritten here. Nothing is fetched: the browse list is a `LazyColumn`, so a
+     * cover request is made when a row scrolls into view and not before.
+     */
+    fun trackCovers(tracks: List<Wire.PlayMusicInfo>, baseUrl: String): Map<String, String> =
+        tracks.mapNotNull { track ->
+            ServerUrl.resolve(track.musicInfo.meta.picUrl, baseUrl)?.let { track.itemId to it }
+        }.toMap()
 }
 
 /** `list.getListMusics(listId)` result: a bare array of tracks, no envelope. */

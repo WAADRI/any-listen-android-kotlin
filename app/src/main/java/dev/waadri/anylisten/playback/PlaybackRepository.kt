@@ -187,6 +187,12 @@ class PlaybackRepository(
 
     // ------------------------------------------------------------------ music source
 
+    /**
+     * The configured server origin, for collaborators that need to resolve the server's
+     * not-quite-absolute URLs. Empty before the socket is attached.
+     */
+    fun serverBaseUrl(): String = baseUrl
+
     suspend fun loadLists(): Result<List<Library.ListSummary>> = runCatching {
         val socket = socket ?: throw IllegalStateException("尚未连接服务端")
         Library.summaries(socket.getAllUserLists(), baseUrl)
