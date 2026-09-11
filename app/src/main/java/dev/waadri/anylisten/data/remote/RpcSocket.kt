@@ -3,6 +3,7 @@ package dev.waadri.anylisten.data.remote
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import dev.waadri.anylisten.Diag
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -128,17 +129,29 @@ class RpcSocket(
         args: List<JsonElement> = emptyList(),
         timeoutMs: Long = DEFAULT_CALL_TIMEOUT_MS,
     ): JsonElement? {
-        val ws = socket ?: throw RpcException("尚未连接到服务器")
-        val callId = "${path.joinToString(".")}_${callIdSeq.incrementAndGet()}"
+        val method = path.joinToString(".")
+        val ws = socket ?: run {
+            Diag.problem("rpc.rejected", "$method — socket is not open")
+            throw RpcException("尚未连接到服务器")
+        }
+        val callId = "${method}_${callIdSeq.incrementAndGet()}"
         val deferred = CompletableDeferred<JsonElement?>()
         pending[callId] = deferred
+        Diag.d("rpc.send", method)
 
         return try {
             val sent = ws.send(M2cCodec.encodeRequest(callId, path, args))
             if (!sent) throw RpcException("消息发送失败，连接可能已断开")
             kotlinx.coroutines.withTimeout(timeoutMs) { deferred.await() }
+                .also { Diag.d("rpc.ok", method) }
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            throw RpcException("调用 ${path.joinToString(".")} 超时")
+            Diag.problem("rpc.timeout", "$method after ${timeoutMs}ms")
+            throw RpcException("调用 $method 超时")
+        } catch (e: RpcException) {
+            // The server answered with an error. This is the line that explains a call that
+            // "succeeded" from the UI's point of view while returning nothing useful.
+            Diag.problem("rpc.error", "$method — ${e.message}")
+            throw e
         } finally {
             pending.remove(callId)
         }
@@ -250,9 +263,18 @@ class RpcSocket(
 
     private suspend fun connectLoop() {
         val wsUrl = buildSocketUrl(baseUrl, session.token)
+        // The URL carries the JWT in its query string, so only its shape is recorded — this is the
+        // single most useful line when a socket handshake is refused, and the easiest to leak.
+        Diag.event(
+            "socket.url",
+            "base" to Diag.url(baseUrl),
+            "path" to "/api/ipc/socket",
+            "token" to Diag.secret(session.token),
+        )
         while (!closedByUs.get()) {
             val attemptNo = attempt.incrementAndGet().toInt()
             _state.value = if (attemptNo == 1) RpcState.Connecting else RpcState.Reconnecting(attemptNo - 1, "连接中断")
+            Diag.event("socket.attempt", "n" to attemptNo)
 
             val settled = CompletableDeferred<CloseReason>()
             val request = Request.Builder().url(wsUrl).build()
@@ -261,6 +283,7 @@ class RpcSocket(
             val reason = settled.await()
             socket = null
             failAllPending("连接已断开")
+            Diag.problem("socket.closed", "code=${reason.code} detail=${reason.detail}")
 
             if (closedByUs.get()) return
             if (reason.code == CLOSE_LOGOUT) {
@@ -279,7 +302,9 @@ class RpcSocket(
             }
 
             _state.value = RpcState.Reconnecting(attemptNo, reason.detail)
-            delay(backoffMs(attemptNo))
+            val backoff = backoffMs(attemptNo)
+            Diag.event("socket.retry", "in" to "${backoff}ms")
+            delay(backoff)
         }
     }
 
@@ -359,6 +384,7 @@ class RpcSocket(
         override fun onOpen(webSocket: WebSocket, response: Response) {
             attempt.set(0)
             _state.value = RpcState.Connected(session.serverName)
+            Diag.d("socket.open", session.serverName)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -380,6 +406,12 @@ class RpcSocket(
                 null -> t.message ?: t.javaClass.simpleName
                 else -> "HTTP $httpCode"
             }
+            // A socket that never opens leaves no other trace at all: no state change, no HTTP
+            // log, nothing the user can see beyond a spinner.
+            Diag.problem(
+                "socket.failure",
+                "http=$httpCode throwable=${t.javaClass.simpleName} message=${t.message}",
+            )
             settled.complete(CloseReason(if (httpCode == 401) CLOSE_LOGOUT else CLOSE_ABNORMAL, detail))
         }
     }

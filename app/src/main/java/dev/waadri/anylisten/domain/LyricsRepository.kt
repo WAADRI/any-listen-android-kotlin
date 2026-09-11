@@ -1,6 +1,7 @@
 package dev.waadri.anylisten.domain
 
 import dev.waadri.anylisten.data.config.ConfigStore
+import dev.waadri.anylisten.Diag
 import dev.waadri.anylisten.data.remote.RpcSocket
 import dev.waadri.anylisten.data.remote.Wire
 import kotlinx.coroutines.CoroutineScope
@@ -113,6 +114,7 @@ class LyricsRepository(
 
         val info = runCatching { socket.getMusicLyric(track.musicInfo, isRefresh) }
             .getOrElse { error ->
+                Diag.problem("lyrics.fetch.failed", "${track.musicInfo.name} — ${error.message}")
                 _state.value = LyricsUiState(
                     trackItemId = track.itemId,
                     loaded = true,
@@ -123,11 +125,22 @@ class LyricsRepository(
 
         if (info == null) {
             // No lyrics for this track. Not an error: the pane says so plainly.
+            Diag.d("lyrics.none", track.musicInfo.name)
             _state.value = LyricsUiState(trackItemId = track.itemId, loaded = true)
             return
         }
 
         val lyrics = LyricsParser.parse(info.lyric, info.tlyric)
+        // The line count is the point. A blank lyric pane looks identical whether the server had
+        // nothing, the tag key was wrong, or the body was stripped of timing — and the last two
+        // are invisible by construction, because an empty document is a valid parse.
+        Diag.event(
+            "lyrics.parsed",
+            "track" to track.musicInfo.name,
+            "chars" to info.lyric.length,
+            "lines" to lyrics.lines.size,
+            "empty" to lyrics.isEmpty,
+        )
         _state.value = LyricsUiState(
             trackItemId = track.itemId,
             lyrics = lyrics,
