@@ -43,6 +43,15 @@ data class PlaybackUiState(
     val queueSize: Int = 0,
     val queueIndex: Int = 0,
     val errorMessage: String? = null,
+
+    /**
+     * Cover art, already resolved against the server. The raw value from the track is a
+     * document-relative path that no image loader can fetch, so the resolved form is carried in
+     * state rather than left for each screen to remember to do; see
+     * [dev.waadri.anylisten.data.remote.ServerUrl].
+     */
+    val artworkUrl: String? = null,
+
     /** Name of the library list the queue came from, for the "playing from" line. */
     val sourceListName: String = "",
 ) {
@@ -359,7 +368,11 @@ class PlaybackRepository(
             return
         }
 
-        engine.setSource(absoluteUrl(url), startPositionMs, mediaMetadataFor(music))
+        engine.setSource(
+            absoluteUrl(url),
+            startPositionMs,
+            mediaMetadataFor(music, ServerUrl.resolve(music.musicInfo.meta.picUrl, baseUrl)),
+        )
         ensureMediaSession()
         if (autoPlay) {
             userWantsPlaying = true
@@ -597,8 +610,9 @@ class PlaybackRepository(
 
     private fun publish() {
         val previous = _state.value
+        val track = queue.getOrNull(currentIndex)
         _state.value = previous.copy(
-            track = queue.getOrNull(currentIndex),
+            track = track,
             isPlaying = engine.isPlaying.value,
             isBuffering = engine.buffering.value,
             positionMs = engine.positionMs.value,
@@ -608,6 +622,7 @@ class PlaybackRepository(
             playMethod = prefs.playMethod,
             queueSize = queue.size,
             queueIndex = currentIndex,
+            artworkUrl = ServerUrl.resolve(track?.musicInfo?.meta?.picUrl, baseUrl),
             sourceListName = sourceListName,
         )
     }

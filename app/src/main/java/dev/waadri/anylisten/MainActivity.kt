@@ -52,11 +52,17 @@ class MainActivity : ComponentActivity() {
 private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
     val connectViewModel: ConnectViewModel = viewModel()
     val playerViewModel: PlayerViewModel = viewModel()
+    // Hoisted to the root because the player shows the current lyric line as well as the lyrics
+    // screen; `viewModel()` returns the same activity-scoped instance either way, so this does not
+    // create a second copy of the lyrics state.
+    val lyricsViewModel: LyricsViewModel = viewModel()
 
     val form by connectViewModel.form.collectAsStateWithLifecycle()
     val phase by connectViewModel.phase.collectAsStateWithLifecycle()
     val playerState by playerViewModel.state.collectAsStateWithLifecycle()
     val connected by playerViewModel.connected.collectAsStateWithLifecycle()
+    val lyricsState by lyricsViewModel.state.collectAsStateWithLifecycle()
+    val showTranslation by lyricsViewModel.showTranslation.collectAsStateWithLifecycle()
 
     // The player is the primary screen and settings is a detour, so the player is the start
     // destination. Saved across configuration changes so rotating while editing the server
@@ -72,6 +78,7 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
         Screen.PLAYER -> PlayerScreen(
             state = playerState,
             connected = connected,
+            lyricLine = lyricsState.lyrics.lyrics.lines.getOrNull(lyricsState.activeIndex)?.text,
             onTogglePlay = playerViewModel::togglePlay,
             onNext = playerViewModel::next,
             onPrevious = playerViewModel::previous,
@@ -84,9 +91,6 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
         )
 
         Screen.LYRICS -> {
-            val lyricsViewModel: LyricsViewModel = viewModel()
-            val lyricsState by lyricsViewModel.state.collectAsStateWithLifecycle()
-            val showTranslation by lyricsViewModel.showTranslation.collectAsStateWithLifecycle()
             LyricsScreen(
                 state = lyricsState,
                 showTranslation = showTranslation,
@@ -106,7 +110,12 @@ private fun AnyListenAppRoot(modifier: Modifier = Modifier) {
                 onBack = { screen = Screen.PLAYER },
                 onOpenList = browseViewModel::openList,
                 onCloseList = browseViewModel::closeList,
-                onPlay = browseViewModel::play,
+                onPlay = { index ->
+                    browseViewModel.play(index)
+                    // Tapping a song means "play this now", so land on the player rather than
+                    // leaving the user in the list wondering whether anything happened.
+                    screen = Screen.PLAYER
+                },
                 onRefresh = browseViewModel::refresh,
                 modifier = modifier,
             )
