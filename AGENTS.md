@@ -125,8 +125,14 @@ any-listen-android/
 1. **`app.inited` 每次重连都要重发。**
    服务端广播普遍带 `if (socket.winType != 'main' || !socket.isInited) return`，而 `isInited` 是 **per-socket** 状态，重连后归零。漏发的表现是「连上了但永远收不到任何推送」，且不报错。
 
-2. **收发方法路径不对称。**
-   服务端 → 客户端为**裸方法名**（`playerEvent`、`playerAction`、`playListAction`、`settingChanged`，`createRemoteGroup` 的分组名不上线）；客户端 → 服务端**要带前缀**（`music.getMusicUrl`、`app.inited`、`list.getAllUserLists`），因为对应服务端 `exposeObj` 的嵌套层级。
+2. **两个方向的方法名都是裸方法名，没有任何前缀。**
+   服务端 → 客户端是裸名（`playerEvent`、`playerAction`、`playListAction`、`settingChanged`）。**客户端 → 服务端同样是裸名**（`inited`、`getAllUserLists`、`getMusicUrl`）：服务端用**平铺工厂**拼出调度对象——`const exposeObj = { ...createExposeApp(), ...createExposeList(), ...createExposeMusic() }`——而 `createExposeList()` 返回的就是 `{ getAllUserLists, getListMusics, ... }`，**不存在 `exposeObj.list` 可供下钻**。
+
+   ⚠️ 本条以前写的是「客户端 → 服务端要带前缀，因为对应服务端 `exposeObj` 的嵌套层级」，**这是错的，并且因此让整条链路彻底不可用**：路径 `["app","inited"]` 会让服务端在 `undefined` 上取属性，抛出 JavaScript 的 `ReferenceError`，日志里就是字面的 `app is not defined` / `list is not defined`。握手与 WebSocket 都能成功，但**每一个**方法调用都失败。
+
+   服务端源码里的 `createRemoteGroup('list', { queue: true, timeout: 0 })` 是**干扰项**：它只在调用方设置本地排队与超时，**不参与路径**。`socket.remoteQueueList.getAllUserLists()` 与 `socket.remote.getAllUserLists()` 走的是同一条路径。
+
+   因此 `OUT_*` 常量一律是**单元素 `List<String>`**，不再是点号字符串再 `split(".")`——那正是 `app.inited` 被切成两段的来源。回归测试见 `RpcSocketTest`，它同时断言常量与 `M2cCodec` 编码出的**真实帧**。
 
 3. **未注册的入站方法必须有兜底。**
    服务端会把播放类广播发给每个 ready 客户端，方法未注册时服务端会记错误日志。因此 `attachSocket` 中保留了 `playerEvent` / `playerAction` / `playListAction` / `settingChanged` 的**空实现**。这是有意的，不要因为「看起来没人用」而删除。

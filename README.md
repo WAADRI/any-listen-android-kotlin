@@ -52,8 +52,10 @@ Android App (Kotlin + Compose)
 1. **`app.inited` 握手强制，且每次重连都要重发。**
    服务端所有广播都带 `if (socket.winType != 'main' || !socket.isInited) return` 守卫，而 `isInited` 是 **per-socket** 状态。漏掉这一步的表现是「连上了但永远收不到任何推送」，不报任何错。
 
-2. **收发路径不对称。**
-   服务端发给客户端的是**裸方法名**（`playerEvent` / `playerAction` / `playListAction` / `settingChanged`，`createRemoteGroup` 的分组名不上线），而客户端发给服务端**要带前缀**（`music.getMusicUrl` / `app.inited` / `list.getAllUserLists`），因为对应服务端 `exposeObj` 的嵌套结构。
+2. **两个方向的方法名都是裸方法名，没有任何前缀。**
+   服务端发给客户端的是裸名（`playerEvent` / `playerAction` / `playListAction` / `settingChanged`），**客户端发给服务端同样是裸名**（`inited` / `getAllUserLists` / `getMusicUrl`）：服务端把 `createExpose*()` 这些**平铺工厂**展开成一个对象，`createExposeList()` 返回的就是 `{ getAllUserLists, getListMusics, ... }`，**没有 `exposeObj.list` 可以下钻**。
+
+   源码里的 `createRemoteGroup('list', ...)` 是干扰项——它只设置调用方的本地排队与超时，**不参与路径**。带前缀的 `["app","inited"]` 会让服务端在 `undefined` 上取属性并抛 `app is not defined`，表现为「连接成功但所有功能都拿不到数据」。
 
 3. **未注册的入站方法要有兜底。**
    服务端会把播放类广播发给每个就绪客户端，方法未注册时服务端会记错误日志。因此代码里保留了 `playerEvent` / `playerAction` / `playListAction` / `settingChanged` 的**空实现**——这是有意的，不要因为「看起来没人用」删掉。
@@ -80,14 +82,14 @@ RPC 线格式（[message2call](https://github.com/lyswhut/message2call)）：
 [3, "<callbackName>", ...]                                   // 回调响应
 ```
 
-**实际使用的服务端接口只有 5 个**，因为播放完全在本机：
+**实际使用的服务端接口只有 5 个**，因为播放完全在本机。注意路径都是单段裸方法名：
 
 ```text
-app.inited                握手（每次重连都要重发）
-list.getAllUserLists      歌单列表
-list.getListMusics        歌单内的曲目
-music.getMusicUrl         解析音频流地址
-music.getMusicLyric       歌词
+inited                    握手（每次重连都要重发）
+getAllUserLists           歌单列表
+getListMusics             歌单内的曲目
+getMusicUrl               解析音频流地址
+getMusicLyric             歌词
 ```
 
 ### 歌词为什么需要一个专门的解析器
@@ -146,7 +148,7 @@ music.getMusicLyric       歌词
 - **划掉最近任务会停止播放**，不做后台驻留。
 - **无跨设备续播**：播放状态纯本地，不与桌面端同步。
 
-## 四个曾经静默失效的坑
+## 五个曾经静默失效的坑
 
 都属于「编译通过、测试通过、装到手机上却完全不工作」的类型，已全部修复并各配回归测试：
 
@@ -155,14 +157,15 @@ music.getMusicLyric       歌词
 | 歌词页永远空白 | 定时歌词在 `[awlrc:...]` 标签的**内层 `lrc` key** 里，而 `buildLyrics` 会删掉正文中所有带时间戳的行 |
 | 「启动时恢复上次播放」从未生效 | `ClientSession` **先交出 socket 再 `start()`**，在回调里直接发请求时 socket 还是 `Idle` |
 | 连接必定失败，报 `NetworkOnMainThreadException` | `viewModelScope` 在 `Dispatchers.Main`，而 OkHttp 的 `execute()` 是阻塞调用 |
-| 对**正常服务器**也报「不是 any-listen 服务端」 | 请求路径被拼成字面量 `/api/IPC_PATH/ah`，服务端 404 |
+| 对**正常服务器**也报「不是 any-listen 服务端」 | HTTP 请求路径被拼成字面量 `/api/IPC_PATH/ah`，服务端 404 |
+| 能连上，但歌单永远为空 | RPC 路径被当成嵌套的 `["list","getAllUserLists"]`，而服务端调度对象是**平铺**的，于是抛 `list is not defined` |
 
-后两个值得单独说，因为它们暴露的是**验证方式本身的问题**，不是某个疏忽：
+后三个值得单独说，因为暴露的是**验证方式本身的问题**，不是某个疏忽：
 
 - 前两个是**静默**失败（不报错、无日志），修法是换触发时机与修正解析 key。续播改挂在 socket 的 `Connected` 事件上，因此首次连接失败后重连成功仍能自愈。
-- 后两个是**绿色 CI 掩盖了无法工作的客户端**：JVM 单测没有主线程检查，而测试断言了常量与 socket URL，**却从没断言过 HTTP 实际请求的路径**。修法是让 `AuthApi` 自己切 `Dispatchers.IO`，并加测试断言真实路径与执行线程。这也说明：**单测全绿不等于功能可用**，真机验证不可省略。
+- 后三个是**绿色 CI 掩盖了无法工作的客户端**：JVM 单测没有主线程检查，而测试断言了常量本身与 socket URL，**却从没断言过 HTTP 实际请求的路径、也没断言过 RPC 实际发出的路径**。修法是让 `AuthApi` 自己切 `Dispatchers.IO`，并让测试断言**真实线上格式**（真实请求路径、真实 WebSocket 帧、真实执行线程）。这也说明：**单测全绿不等于功能可用**，真机验证不可省略。
 
-详见 `AGENTS.md` 的「协议陷阱」（第 8–10 条）。
+详见 `AGENTS.md` 的「协议陷阱」（第 2、8、9、10 条）。
 
 ## 致谢
 
