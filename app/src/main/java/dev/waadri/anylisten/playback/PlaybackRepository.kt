@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.media3.common.Player
 import androidx.media3.session.MediaSession
+import dev.waadri.anylisten.Diag
 import dev.waadri.anylisten.MainActivity
 import dev.waadri.anylisten.data.config.ConfigStore
 import dev.waadri.anylisten.data.config.PlaybackPreferences
@@ -202,10 +203,30 @@ class PlaybackRepository(
     }
 
     private suspend fun resolveUrl(musicInfo: Wire.MusicInfo): String? {
-        val socket = socket ?: return null
-        return runCatching { socket.getMusicUrl(musicInfo, prefs.playQuality).url }
-            .getOrNull()
+        val socket = socket ?: run {
+            Diag.problem("url.no_socket", musicInfo.name)
+            return null
+        }
+        val resolved = runCatching { socket.getMusicUrl(musicInfo, prefs.playQuality).url }
+            .getOrElse { error ->
+                // Silent before this: a failure here left the transport row doing nothing at all.
+                Diag.problem("url.resolve.failed", "${musicInfo.name} — ${error.javaClass.simpleName}: ${error.message}")
+                return null
+            }
             ?.takeIf { it.isNotBlank() }
+        if (resolved == null) {
+            Diag.problem("url.resolve.blank", musicInfo.name)
+            return null
+        }
+        val absolute = absoluteUrl(resolved)
+        Diag.event(
+            "url.resolved",
+            "track" to musicInfo.name,
+            "raw" to Diag.url(resolved),
+            "absolute" to Diag.url(absolute),
+            "madeAbsolute" to (absolute != resolved),
+        )
+        return absolute
     }
 
     /**
@@ -470,6 +491,13 @@ class PlaybackRepository(
         // Mode and the switch are local preferences, not playback state, so they are adopted even
         // when nothing is restored.
         prefs = prefs.copy(playMethod = saved.playMethod, resumeOnLaunch = saved.resumeOnLaunch)
+        Diag.event(
+            "resume.check",
+            "savedList" to saved.lastListId,
+            "track" to saved.lastTrackIndex,
+            "positionMs" to saved.lastPositionMs,
+            "enabled" to saved.resumeOnLaunch,
+        )
 
         if (!saved.resumeOnLaunch) {
             resumeSettled = true
@@ -487,6 +515,7 @@ class PlaybackRepository(
         // emission should try again rather than the feature silently giving up.
         val restored = loadListMusics(listId).getOrNull()
         if (restored.isNullOrEmpty()) {
+            Diag.problem("resume.load.empty", "list=$listId — keeping the point pending for the next connect")
             publish()
             return
         }

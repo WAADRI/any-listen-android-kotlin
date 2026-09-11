@@ -1,5 +1,6 @@
 package dev.waadri.anylisten.domain
 
+import dev.waadri.anylisten.Diag
 import dev.waadri.anylisten.data.remote.AuthApi
 import dev.waadri.anylisten.data.remote.AuthResult
 import dev.waadri.anylisten.data.remote.RpcSocket
@@ -66,23 +67,26 @@ class ClientSession(
     suspend fun connect(serverUrl: String, password: String) {
         disconnectInternal()
         _phase.value = ConnectionPhase.Authenticating
+        Diag.event("session.connect", "url" to Diag.url(serverUrl))
 
+        // Every branch below is logged with the same string the UI shows, so a screenshot of the
+        // failure and a logcat line are always the same sentence.
         when (val result = authApi.connect(serverUrl, password)) {
             is AuthResult.Success -> startSocket(serverUrl, result.session)
-            AuthResult.BadPassword ->
-                _phase.value = ConnectionPhase.Failed("访问密码不正确", recoverable = true)
-            AuthResult.BlockedIp ->
-                _phase.value = ConnectionPhase.Failed(
-                    "该 IP 已被服务端暂时封禁（同一 IP 连续失败超过 10 次），请稍后再试",
-                    recoverable = true,
-                )
-            is AuthResult.NotAnyListen ->
-                _phase.value = ConnectionPhase.Failed("该地址不是 any-listen 服务端：${result.detail}", recoverable = true)
-            is AuthResult.Unreachable ->
-                _phase.value = ConnectionPhase.Failed(result.detail, recoverable = true)
-            is AuthResult.Unexpected ->
-                _phase.value = ConnectionPhase.Failed("服务端返回异常：${result.detail}", recoverable = true)
+            AuthResult.BadPassword -> fail("访问密码不正确")
+            AuthResult.BlockedIp -> fail(
+                "该 IP 已被服务端暂时封禁（同一 IP 连续失败超过 10 次），请稍后再试",
+            )
+            is AuthResult.NotAnyListen -> fail("该地址不是 any-listen 服务端：${result.detail}")
+            is AuthResult.Unreachable -> fail(result.detail)
+            is AuthResult.Unexpected -> fail("服务端返回异常：${result.detail}")
         }
+    }
+
+    /** Surfaces a failure the user must act on, identically on screen and in the log. */
+    private fun fail(message: String) {
+        Diag.problem("session.failed", message)
+        _phase.value = ConnectionPhase.Failed(message, recoverable = true)
     }
 
     fun disconnect() {
@@ -110,11 +114,21 @@ class ClientSession(
                     is RpcState.Reconnecting -> ConnectionPhase.Reconnecting(state.attempt, state.reason)
                     is RpcState.Failed -> ConnectionPhase.Failed(state.reason, recoverable = true)
                 }
+                Diag.event(
+                    "session.state",
+                    "state" to state::class.simpleName,
+                    "detail" to when (state) {
+                        is RpcState.Connected -> state.serverName
+                        is RpcState.Reconnecting -> "attempt=${state.attempt} ${state.reason}"
+                        is RpcState.Failed -> state.reason
+                        else -> null
+                    },
+                )
                 if (state is RpcState.Connected) {
                     // The server resets `isInited` per socket, so every (re)connect needs this
                     // handshake or all server->client broadcasts are skipped silently.
                     runCatching { socket.markInited() }
-                        .onFailure { /* logged by the socket layer; retried on next connect */ }
+                        .onFailure { Diag.problem("session.inited.failed", it.message) }
                 }
             }
         }

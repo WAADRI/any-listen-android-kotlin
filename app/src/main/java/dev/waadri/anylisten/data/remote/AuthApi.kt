@@ -1,5 +1,6 @@
 package dev.waadri.anylisten.data.remote
 
+import dev.waadri.anylisten.Diag
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -51,13 +52,24 @@ class AuthApi(
 ) {
 
     suspend fun connect(rawUrl: String, password: String): AuthResult {
-        val base = normalizeBaseUrl(rawUrl) ?: return AuthResult.Unreachable("无法解析服务器地址：$rawUrl")
+        val base = normalizeBaseUrl(rawUrl) ?: run {
+            // The most common first failure, and one the user cannot diagnose from the UI: a URL
+            // that normalises to nothing never produces a request, so there is no network error.
+            Diag.problem("auth.url.rejected", "input=\"${Diag.url(rawUrl)}\"")
+            return AuthResult.Unreachable("无法解析服务器地址：$rawUrl")
+        }
+        Diag.event("auth.start", "base" to Diag.url(base), "password" to Diag.secret(password))
 
         val serverId = try {
             fetchServerId(base)
         } catch (e: Exception) {
+            Diag.problem("auth.serverId.failed", "${e.javaClass.simpleName}: ${e.message}")
             return classifyNetworkError(e)
-        } ?: return AuthResult.NotAnyListen("该地址不是 any-listen 服务端（/api/ipc/id 响应格式不符）")
+        } ?: run {
+            Diag.problem("auth.serverId.unexpected", "GET $base/api/ipc/id did not start with OjppZDo6-")
+            return AuthResult.NotAnyListen("该地址不是 any-listen 服务端（/api/ipc/id 响应格式不符）")
+        }
+        Diag.d("auth.serverId", serverId)
 
         return try {
             val salt = randomSalt()
@@ -71,6 +83,7 @@ class AuthApi(
 
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
+                Diag.event("auth.response", "code" to response.code, "token" to Diag.secret(response.header("token")))
                 when {
                     response.code == 403 -> AuthResult.BlockedIp
                     response.code == 401 -> AuthResult.BadPassword
@@ -85,12 +98,14 @@ class AuthApi(
                             val serverName = body.removePrefix(HELLO_MSG)
                                 .trim()
                                 .let { if (it.isEmpty()) "" else runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }
+                            Diag.event("auth.success", "serverName" to serverName)
                             AuthResult.Success(ServerSession(serverId, serverName, token))
                         }
                     }
                 }
             }
         } catch (e: Exception) {
+            Diag.problem("auth.request.failed", "${e.javaClass.simpleName}: ${e.message}")
             classifyNetworkError(e)
         }
     }
