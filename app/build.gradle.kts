@@ -58,6 +58,11 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            // Test stdout is invisible by default, which turns any diagnostic println into a
+            // wasted CI round trip.
+            it.testLogging { showStandardStreams = true }
+        }
     }
 }
 
