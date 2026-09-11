@@ -146,6 +146,18 @@ any-listen-android/
 8. **`attachSocket` 回调触发时，socket 还没有 `start()`。**
    `ClientSession` 是**先**调用 `onSocketChanged(socket, url)`、**后**才 `socket.start()`（见 `ClientSession.kt`）。此刻 `RpcState` 仍是 `Idle`，**在该回调里直接发 RPC 必定立刻失败**。已有教训：启动续播原本就在这个回调里直接读歌单，于是每次都失败——功能「看起来实现了」却一次都没生效，而且**不报错、无日志**。正确做法是等 `socket.state` 发出 `Connected` 再发请求（见 `PlaybackRepository.observeResume`），这样首次连接失败后重连成功仍能自愈。**凡是要在连接建立后才做的初始化，都必须挂在 `Connected` 上，不能挂在 `attachSocket` 上。**
 
+9. **阻塞式 HTTP 调用必须自己切到 `Dispatchers.IO`。**
+   `viewModelScope` 跑在 `Dispatchers.Main`，OkHttp 的 `execute()` 是**阻塞**的。已有教训：`AuthApi.connect` 直接在主线程执行，导致**每台设备、每个服务器**都抛 `NetworkOnMainThreadException`，而**所有单测照样全绿**——JVM 测试没有主线程检查。修法是在 `data/remote/` 的挂起函数内部 `withContext(Dispatchers.IO)`，**不要指望调用方记得包一层**：早期版本有个 `connectOnIo()` 包装器，无人调用，它的存在反而掩盖了问题。回归测试见 `AuthApiThreadingTest`（从 `Dispatchers.Main` 发起，用 interceptor 校验实际执行线程）。
+
+10. **拼 URL 时，字符串模板里的每个常量都要用 `${...}` 包起来。**
+    错误写法（实际就是这么写错的）：
+
+    ```kotlin
+    "$base$API_PREFIX/IPC_PATH/ah"   // → /api/IPC_PATH/ah   ✗
+    ```
+
+    Kotlin 把 `$API_PREFIX` 当成变量，而**前面缺 `$` 的 `IPC_PATH` 变成纯文本**，请求打到不存在的路由上，服务端 404。已有教训：这个 bug 从协议层第一个提交起就在 `main` 上，**96 个单测全绿**，而客户端连不上任何服务器——因为测试断言了 `buildSocketUrl`（那里写对了，用的是 `${AuthApi.API_PREFIX}${AuthApi.IPC_PATH}`），**却从没断言过 HTTP 的实际请求路径**。**凡是拼 URL 的地方，测试都要断言真实路径**，不要只断言常量本身。回归测试见 `AuthApiThreadingTest`。
+
 改动上述任一环节时，请同步更新 `README.md` 的说明，并保证 `app/src/test/` 中有对应覆盖。
 
 ## 适用对象
