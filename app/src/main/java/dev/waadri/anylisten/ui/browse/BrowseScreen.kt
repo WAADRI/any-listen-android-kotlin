@@ -36,9 +36,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Precision
+import coil.size.Scale
+import coil.size.Size
 import dev.waadri.anylisten.data.remote.Library
 import dev.waadri.anylisten.data.remote.Wire
 
@@ -119,6 +126,7 @@ fun BrowseScreen(
 
             state.openListId != null -> TrackList(
                 tracks = state.tracks,
+                trackCovers = state.trackCovers,
                 playingItemId = state.playingItemId,
                 onPlay = onPlay,
             )
@@ -145,7 +153,11 @@ private fun ListList(
                 },
                 supportingContent = { Text("${list.songCount} 首") },
                 leadingContent = {
-                    CoverThumb(url = list.coverUrl, fallbackIcon = Icons.Filled.QueueMusic)
+                    CoverThumb(
+                        url = list.coverUrl,
+                        fallbackIcon = Icons.Filled.QueueMusic,
+                        size = 48.dp,
+                    )
                 },
                 modifier = Modifier.clickable { onOpenList(list) },
             )
@@ -157,6 +169,7 @@ private fun ListList(
 @Composable
 private fun TrackList(
     tracks: List<Wire.PlayMusicInfo>,
+    trackCovers: Map<String, String>,
     playingItemId: String?,
     onPlay: (Int) -> Unit,
 ) {
@@ -189,8 +202,11 @@ private fun TrackList(
                 },
                 leadingContent = {
                     CoverThumb(
-                        url = track.musicInfo.meta.picUrl,
+                        // Resolved by the view model; only rows on screen are composed, so only
+                        // these are ever requested.
+                        url = trackCovers[track.itemId],
                         fallbackIcon = Icons.Filled.MusicNote,
+                        size = 48.dp,
                     )
                 },
                 trailingContent = {
@@ -218,11 +234,12 @@ private fun TrackList(
 private fun CoverThumb(
     url: String?,
     fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector,
+    size: Dp,
 ) {
     val shape = RoundedCornerShape(8.dp)
     Box(
         modifier = Modifier
-            .size(48.dp)
+            .size(size)
             .clip(shape),
         contentAlignment = Alignment.Center,
     ) {
@@ -233,8 +250,22 @@ private fun CoverThumb(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
+            val context = LocalContext.current
+            val pixels = with(LocalDensity.current) { size.roundToPx() }.coerceAtLeast(1)
+            // Ask for exactly the thumbnail, not the full-size artwork: a list row needs a 48dp
+            // square, and decoding a 1000px cover per row is the kind of waste that makes a long
+            // list feel heavy. The request is only made when the row is composed, so off-screen
+            // covers are never fetched at all.
+            val request = remember(url, pixels, context) {
+                ImageRequest.Builder(context)
+                    .data(url)
+                    .size(Size(pixels, pixels))
+                    .scale(Scale.FILL)
+                    .precision(Precision.INEXACT)
+                    .build()
+            }
             AsyncImage(
-                model = url,
+                model = request,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),

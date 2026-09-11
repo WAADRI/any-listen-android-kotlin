@@ -1,10 +1,12 @@
 package dev.waadri.anylisten
 
 import android.app.Application
+import coil.Coil
 import dev.waadri.anylisten.data.config.ConfigStore
 import dev.waadri.anylisten.domain.ClientSession
 import dev.waadri.anylisten.domain.LyricsRepository
 import dev.waadri.anylisten.playback.PlaybackRepository
+import dev.waadri.anylisten.ui.AnyListenImageLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -57,6 +59,9 @@ class AnyListenApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Registered before any UI exists, so the first cover request already uses the tuned
+        // loader rather than Coil's defaults.
+        Coil.setImageLoader(AnyListenImageLoader.create(this))
         container = AppContainer(this)
     }
 }

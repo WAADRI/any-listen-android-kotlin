@@ -140,6 +140,37 @@ class LibraryTest {
     }
 
     @Test
+    fun `track covers are resolved against the server`() {
+        // The real shape from the device: a document-relative proxy path, which no image loader
+        // can fetch as-is.
+        val tracks = listOf(
+            playMusic("l1::m1", picUrl = "./api/p_static/abc.jpeg"),
+            playMusic("l1::m2", picUrl = "https://cdn.example.com/d.jpg"),
+        )
+
+        val covers = Library.trackCovers(tracks, "https://music.waadri.top")
+
+        assertEquals("https://music.waadri.top/api/p_static/abc.jpeg", covers["l1::m1"])
+        // An absolute cover is left alone rather than rewritten.
+        assertEquals("https://cdn.example.com/d.jpg", covers["l1::m2"])
+    }
+
+    @Test
+    fun `tracks without a cover are simply absent from the map`() {
+        val tracks = listOf(playMusic("l1::m1", picUrl = null), playMusic("l1::m2", picUrl = ""))
+
+        val covers = Library.trackCovers(tracks, "https://music.waadri.top")
+
+        assertEquals(emptyMap<String, String>(), covers)
+    }
+
+    private fun playMusic(itemId: String, picUrl: String?): Wire.PlayMusicInfo = Wire.PlayMusicInfo(
+        itemId = itemId,
+        listId = "l1",
+        musicInfo = Wire.MusicInfo(id = itemId, name = "歌", meta = Wire.MusicMeta(picUrl = picUrl)),
+    )
+
+    @Test
     fun `a device id marks the track as local`() {
         val remote = ListMusicEntry(id = "m1", name = "在线", meta = Wire.MusicMeta(musicId = "m1"))
         val local = ListMusicEntry(

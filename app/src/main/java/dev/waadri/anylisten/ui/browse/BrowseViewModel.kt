@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.waadri.anylisten.AnyListenApp
 import dev.waadri.anylisten.data.remote.Library
+import dev.waadri.anylisten.data.remote.ServerUrl
 import dev.waadri.anylisten.data.remote.Wire
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,6 +19,14 @@ data class BrowseUiState(
     val openListId: String? = null,
     val openListName: String = "",
     val tracks: List<Wire.PlayMusicInfo> = emptyList(),
+    /**
+     * Cover art per track item id, resolved against the server.
+     *
+     * Kept beside the tracks rather than written into [Wire.PlayMusicInfo]: those are protocol
+     * models whose `meta.picUrl` is the server's raw value, and overwriting it with a rewritten
+     * URL would make the model lie about what the server sent.
+     */
+    val trackCovers: Map<String, String> = emptyMap(),
     val loadingTracks: Boolean = false,
     val errorMessage: String? = null,
     /** Item id of the track currently playing, so the list can highlight it. */
@@ -66,6 +75,7 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
                 openListId = list.id,
                 openListName = list.name,
                 tracks = emptyList(),
+                trackCovers = emptyMap(),
                 loadingTracks = true,
                 errorMessage = null,
             )
@@ -73,7 +83,11 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
                 .onSuccess { tracks ->
                     // Guard against a slower response overwriting a list the user already left.
                     if (_state.value.openListId != list.id) return@onSuccess
-                    _state.value = _state.value.copy(tracks = tracks, loadingTracks = false)
+                    _state.value = _state.value.copy(
+                        tracks = tracks,
+                        trackCovers = Library.trackCovers(tracks, container.playback.serverBaseUrl()),
+                        loadingTracks = false,
+                    )
                 }
                 .onFailure { error ->
                     if (_state.value.openListId != list.id) return@onFailure
@@ -90,6 +104,7 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
             openListId = null,
             openListName = "",
             tracks = emptyList(),
+            trackCovers = emptyMap(),
             loadingTracks = false,
             errorMessage = null,
         )
