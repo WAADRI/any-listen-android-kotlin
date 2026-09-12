@@ -1,6 +1,27 @@
-# any-listen-android
+> # ⚠️ 本项目已归档，不再维护
+>
+> 本仓库（Kotlin + Jetpack Compose 自研客户端）**已停止开发并归档，转为只读**，不再接受 issue / PR / 合并请求。代码留在这里只作参考。
+>
+> ## 请改用 [any-listen-android](https://github.com/WAADRI/any-listen-android)
+>
+> 那是基于 [lx-music-mobile](https://github.com/lyswhut/lx-music-mobile) 的 fork：界面与播放器沿用 lx，数据层同样对接你自己的 any-listen 服务端（填服务器地址 + 密码即可）。本项目已有的曲库浏览、搜索、播放、歌单等功能它都已具备，另外还支持：
+>
+> - **逐字歌词**（服务端有 `awlyric` 时随播放逐字扫过，本项目只做到逐行高亮）
+> - 歌单与歌曲的收藏、排序、批量操作
+> - 通知栏 / 蓝牙歌词
+> - 固定的发布签名密钥，可直接覆盖安装升级
+>
+> ### 为什么换路线
+>
+> 两条路解决的是同一个问题（本地播放器 + any-listen 曲库）。fork lx 等于直接得到 lx 打磨多年的播放器内核（react-native-track-player）、后台播放、媒体通知与整套界面，而自研 Compose 客户端每补一个功能都要从零写一遍。既然如此，继续维护这一套不划算。
+>
+> 本项目踩过的坑仍然有效，都已带进新项目：见 [AGENTS.md](./AGENTS.md) 的「协议陷阱」，以及下面「五个曾经静默失效的坑」。
 
-[any-listen](https://github.com/any-listen/any-listen) 自建音乐服务的**原生 Android 客户端**。
+---
+
+# any-listen-android-kotlin
+
+[any-listen](https://github.com/any-listen/any-listen) 自建音乐服务的**原生 Android 客户端**（已归档）。
 
 用 Kotlin + Jetpack Compose 写界面，用 Media3/ExoPlayer 做原生播放，**服务端完全不动**。装上填服务器地址与访问密码即可使用。
 
